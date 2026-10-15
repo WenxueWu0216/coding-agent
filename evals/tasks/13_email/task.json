@@ -1,0 +1,5 @@
+{
+  "id": "13_email",
+  "category": "feature",
+  "prompt": "Implement is_valid_email(s) in email_check.py: exactly one '@', non-empty local part, and a domain containing a dot that doesn't start or end with a dot. No spaces allowed."
+}

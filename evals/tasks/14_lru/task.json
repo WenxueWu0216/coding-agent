@@ -1,0 +1,5 @@
+{
+  "id": "14_lru",
+  "category": "feature",
+  "prompt": "Implement the LRUCache class in lru.py with get(key) (returns -1 if missing) and put(key, value); evict the least recently used key when over capacity."
+}

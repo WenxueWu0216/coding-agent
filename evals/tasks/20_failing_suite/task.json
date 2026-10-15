@@ -1,0 +1,5 @@
+{
+  "id": "20_failing_suite",
+  "category": "multi_file",
+  "prompt": "The test suite in tests/ is failing. Make it pass by fixing the code, not the tests."
+}

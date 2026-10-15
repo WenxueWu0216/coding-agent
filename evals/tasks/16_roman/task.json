@@ -1,0 +1,5 @@
+{
+  "id": "16_roman",
+  "category": "feature",
+  "prompt": "Implement roman_to_int(s) in roman.py for standard Roman numerals (I, V, X, L, C, D, M, including subtractive forms like IV and CM)."
+}

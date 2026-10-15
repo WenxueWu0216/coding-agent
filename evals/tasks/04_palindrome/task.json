@@ -1,0 +1,5 @@
+{
+  "id": "04_palindrome",
+  "category": "bugfix",
+  "prompt": "is_palindrome('A man a plan a canal Panama') should be True but isn't. It should ignore case and non-letters. Fix text.py."
+}

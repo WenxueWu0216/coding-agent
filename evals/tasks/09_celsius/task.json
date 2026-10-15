@@ -1,0 +1,5 @@
+{
+  "id": "09_celsius",
+  "category": "bugfix",
+  "prompt": "to_fahrenheit(37.5) returns a wrong value. Fix temps.py."
+}

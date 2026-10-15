@@ -1,0 +1,5 @@
+{
+  "id": "17_slugify",
+  "category": "multi_file",
+  "prompt": "make_url('Hello World!') in app.py should return '/posts/hello-world' but returns something else. Find and fix the root cause."
+}

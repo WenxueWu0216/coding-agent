@@ -1,0 +1,5 @@
+{
+  "id": "19_config_key",
+  "category": "multi_file",
+  "prompt": "get_timeout() in settings.py always returns the default 5 even though config.json sets a different value. Fix it without changing config.json."
+}

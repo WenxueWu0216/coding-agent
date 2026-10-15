@@ -1,0 +1,5 @@
+{
+  "id": "02_mutable_default",
+  "category": "bugfix",
+  "prompt": "add_tag() in tags.py leaks tags between separate calls. Fix it."
+}

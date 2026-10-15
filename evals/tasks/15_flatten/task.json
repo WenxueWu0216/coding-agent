@@ -1,0 +1,5 @@
+{
+  "id": "15_flatten",
+  "category": "feature",
+  "prompt": "Implement flatten(nested) in flat.py: flatten arbitrarily nested lists into one flat list. Strings are not lists and must not be split."
+}

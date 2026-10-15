@@ -1,0 +1,5 @@
+{
+  "id": "01_last_n",
+  "category": "bugfix",
+  "prompt": "last_n() in listops.py returns the wrong number of items. Fix it."
+}

@@ -1,0 +1,5 @@
+{
+  "id": "05_fizzbuzz",
+  "category": "bugfix",
+  "prompt": "fizzbuzz(15) should return 'FizzBuzz'. Fix fizz.py."
+}
