@@ -1,5 +1,6 @@
 {
   "id": "06_binary_search",
+  "suite": "core",
   "category": "bugfix",
   "prompt": "binary_search() in search.py misses some elements. Fix it."
 }

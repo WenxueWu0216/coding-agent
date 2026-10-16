@@ -1,5 +1,6 @@
 {
   "id": "11_chunk",
+  "suite": "core",
   "category": "feature",
   "prompt": "Implement chunk(xs, size) in chunks.py: split a list into consecutive lists of length size (last one may be shorter). Raise ValueError if size < 1."
 }

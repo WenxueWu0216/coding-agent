@@ -1,5 +1,6 @@
 {
   "id": "18_greeting_param",
+  "suite": "core",
   "category": "multi_file",
   "prompt": "Add an optional greeting parameter (default 'Hello') to greet() in greetings.py, and pass it through welcome() in cli.py, so welcome('Ana', greeting='Hi') returns 'Hi, Ana!'."
 }

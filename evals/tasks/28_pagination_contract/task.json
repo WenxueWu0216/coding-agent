@@ -1,0 +1,6 @@
+{
+  "id": "28_pagination_contract",
+  "suite": "hard",
+  "category": "edge_cases",
+  "prompt": "paginate() skips the first page of results, and total_pages() is wrong for some sizes. Fix pages.py so both match their docstrings."
+}

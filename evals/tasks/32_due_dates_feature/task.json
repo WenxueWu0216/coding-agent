@@ -1,0 +1,6 @@
+{
+  "id": "32_due_dates_feature",
+  "suite": "hard",
+  "category": "feature_multi",
+  "prompt": "Add due dates to the todo app. Todo gets an optional `due` field (a datetime.date, default None). TodoStore.add() accepts an optional due date. Add TodoStore.overdue(today) that returns the incomplete todos whose due date is before today, sorted by due date. format_todo() should append ' (due YYYY-MM-DD)' when a due date is set."
+}

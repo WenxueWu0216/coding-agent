@@ -1,5 +1,6 @@
 {
   "id": "08_parse_date",
+  "suite": "core",
   "category": "bugfix",
   "prompt": "parse_date('2026-10-10') should return a tuple of ints (2026, 10, 10). Fix dates.py."
 }

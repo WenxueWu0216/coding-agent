@@ -1,5 +1,6 @@
 {
   "id": "10_safe_int",
+  "suite": "core",
   "category": "bugfix",
   "prompt": "safe_int(' 12 ') returns None instead of 12. Fix parse.py."
 }

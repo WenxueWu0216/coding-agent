@@ -1,0 +1,6 @@
+{
+  "id": "30_merge_intervals",
+  "suite": "hard",
+  "category": "edge_cases",
+  "prompt": "merge_intervals() in intervals.py sometimes returns overlapping intervals. Fix it so it matches its docstring."
+}

@@ -1,5 +1,6 @@
 {
   "id": "12_top_words",
+  "suite": "core",
   "category": "feature",
   "prompt": "Implement top_words(text, k) in words.py: return the k most common words (case-insensitive, letters only) as a list of (word, count), most common first; break ties alphabetically."
 }

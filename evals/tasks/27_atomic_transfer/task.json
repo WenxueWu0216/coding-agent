@@ -1,0 +1,6 @@
+{
+  "id": "27_atomic_transfer",
+  "suite": "hard",
+  "category": "edge_cases",
+  "prompt": "A customer reported that a transfer which failed for insufficient funds still showed up in the recipient's balance. Fix Account in bank.py, and make sure deposits, withdrawals and transfers reject non-positive amounts."
+}

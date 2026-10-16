@@ -6,7 +6,7 @@ No agent framework is used. The tool-use loop, tool layer, safety checks, evals,
 
 ## Results
 
-Baseline on the 20-task suite, 3 repeats per task:
+Core suite (20 tasks), 3 repeats per task:
 
 | Model | Runs | Pass rate | Tool calls / task | Tokens / task | Cost / task |
 |---|---|---|---|---|---|
@@ -18,7 +18,7 @@ Baseline on the 20-task suite, 3 repeats per task:
 | Feature | 6 | 100% | 4.4 |
 | Multi-file | 4 | 100% | 5.3 |
 
-The suite is now saturated, so the next step is a harder task set (see [Roadmap](#roadmap)).
+The core suite is saturated, so I added a 12-task **hard** suite designed to separate models. Hard-suite results: pending.
 
 ## How it works
 
@@ -59,16 +59,18 @@ The threat model assumes the model can be manipulated by prompt injection inside
 **Known limitation:** `python` and `pytest` are on the allowlist and can execute arbitrary code, so the allowlist stops accidental damage but is not a hard boundary. The planned fix is to run tools inside a Docker container with no network access.
 
 ### Evaluation harness
-- **20 tasks** across bug fixes, features, and multi-file changes. Each task has starting code, a natural-language prompt, **hidden unit tests**, and a reference solution.
+- **32 tasks in two suites.** *Core* (20): bug fixes, features, multi-file changes. *Hard* (12): cross-module renames (including aliased imports), specs that must be inferred from existing tests, bug reports that point at the wrong file, unstated edge cases (atomicity, input mutation, empty input), constraint following ("don't use the csv module", "don't edit the tests"), and a feature spanning model, store, and view layers.
+- Each task has starting code, a natural-language prompt, **hidden unit tests**, and a reference solution.
 - Each run copies the task into a temp directory, runs the agent with auto-approval, then runs the hidden tests. The tests live **outside the agent's sandbox**, so it cannot read or overfit to them.
 - **Task validation:** `--validate` checks that every hidden test fails on the original code and passes with the reference fix. This caught a stale-bytecode bug (same-size edits within the same second reused cached `.pyc` files) that would have scored correct fixes as failures.
+- **Tamper detection:** tasks can mark files as protected, such as visible tests the agent is told not to edit. If the agent changes them, the run is scored `tampered` instead of passing, so it can't succeed by weakening the tests.
 - **Repeats** (`--repeat N`) measure variance, since model outputs are non-deterministic.
 - An **oracle test** replays every reference solution through the full harness and must score 100%, which verifies the harness itself.
 
 ### Observability
 - **Run manifest:** each run records content hashes of the system prompt, tool schemas, and task set, plus the git commit, model, config, and SDK version. Any result traces back to the version that produced it.
 - **JSONL traces:** one file per task run, with an event for every model call (latency, tokens, stop reason) and tool call (arguments, latency, typed error, output).
-- **Error taxonomy:** tools raise typed errors (`edit_mismatch`, `policy_block`, `file_not_found`, `bad_args`, `timeout`, …). Task failures are classified as `api_error`, `harness_crash`, `step_limit`, `no_change`, or `wrong_fix`, separating infrastructure problems from agent mistakes.
+- **Error taxonomy:** tools raise typed errors (`edit_mismatch`, `policy_block`, `file_not_found`, `bad_args`, `timeout`, …). Task failures are classified as `api_error`, `harness_crash`, `step_limit`, `tampered`, `no_change`, or `wrong_fix`, separating infrastructure problems from agent mistakes.
 - **Latency and cost:** model time vs. tool time, p50/p95 per task, and token cost per task.
 - **Regression report:** compares two runs task by task, flags changed prompt/tool/task versions, and exits non-zero below a pass-rate threshold so it can gate CI.
 
@@ -89,7 +91,8 @@ python agent.py
 Evaluation:
 ```bash
 python eval.py --validate                              # check tasks, no API calls
-python eval.py --repeat 3 --model claude-haiku-5-5     # run the suite
+python eval.py --repeat 3 --model claude-haiku-5-5     # run all tasks
+python eval.py --suite hard --model claude-sonnet-5-5   # only the hard suite
 python report.py latest                                # summary of the newest run
 python report.py latest --trace 17_slugify             # step-by-step trace of one task
 python report.py OLD_RUN NEW_RUN --threshold 0.9       # regression report
@@ -108,7 +111,7 @@ safety.py         Path sandbox and command allowlist
 eval.py           Eval harness: task runner, hidden tests, scoring, failure taxonomy
 tracing.py        JSONL tracer and versioned run manifest
 report.py         Run summaries, traces, regression comparison
-evals/tasks/      20 tasks: task.json, repo/, hidden_test.py, solution/
+evals/tasks/      32 tasks (core + hard): task.json, repo/, hidden_test.py, solution/
 evals/runs/       Run outputs (git-ignored): manifest.json, results.jsonl, traces/
 test_safety.py    18 security tests
 test_eval.py      Harness, tracing, taxonomy, and regression tests
@@ -120,7 +123,7 @@ test_eval.py      Harness, tracing, taxonomy, and regression tests
 - [x] Safety layer and approval gate
 - [x] Evaluation harness with validated hidden tests
 - [x] Observability: traces, run manifests, error taxonomy, regression reports
-- [ ] Harder task set (multi-file refactors, requirements inferred from tests) to lift the suite off the ceiling
+- [x] Hard task suite with tamper detection
 - [ ] Reliability: retries with exponential backoff, circuit breaker, record/replay of model calls
 - [ ] CI regression gate in GitHub Actions
 - [ ] Docker sandbox for tool execution

@@ -50,12 +50,13 @@ def summary(run_dir):
     print(f"result    {sum(r['passed'] for r in rows)}/{len(rows)} passed ({pass_rate(rows):.0%})   "
           f"cost ${sum(r['cost_usd'] for r in rows):.4f}")
 
-    print("\nby category")
-    by_cat = defaultdict(list)
-    for r in rows:
-        by_cat[r["category"]].append(r)
-    for cat, rs in sorted(by_cat.items()):
-        print(f"  {cat:<12} {pass_rate(rs):>5.0%}  (n={len(rs)})")
+    for key in ("suite", "category"):
+        print(f"\nby {key}")
+        groups = defaultdict(list)
+        for row in rows:
+            groups[row.get(key, "core")].append(row)
+        for name, rs in sorted(groups.items()):
+            print(f"  {name:<14} {pass_rate(rs):>5.0%}  (n={len(rs)})")
 
     print("\nfailure taxonomy (per task run)")
     for kind, n in Counter(r["failure_type"] for r in rows).most_common():

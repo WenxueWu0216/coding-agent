@@ -1,0 +1,6 @@
+{
+  "id": "23_misleading_report",
+  "suite": "hard",
+  "category": "root_cause",
+  "prompt": "Bug report: display_price(1005) in app.py shows '$10.5' instead of '$10.05'. Please fix app.py."
+}

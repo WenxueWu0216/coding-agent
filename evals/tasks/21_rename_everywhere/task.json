@@ -1,0 +1,6 @@
+{
+  "id": "21_rename_everywhere",
+  "suite": "hard",
+  "category": "refactor",
+  "prompt": "Rename the function calc_total to compute_total across the whole codebase. The old name must not exist anywhere afterwards, and everything that used it must keep working."
+}

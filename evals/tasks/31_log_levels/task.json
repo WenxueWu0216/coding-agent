@@ -1,0 +1,6 @@
+{
+  "id": "31_log_levels",
+  "suite": "hard",
+  "category": "root_cause",
+  "prompt": "With the log level set to WARNING, ERROR messages are being hidden. Fix it."
+}

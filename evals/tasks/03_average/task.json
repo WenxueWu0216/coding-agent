@@ -1,5 +1,6 @@
 {
   "id": "03_average",
+  "suite": "core",
   "category": "bugfix",
   "prompt": "mean() in stats.py gives wrong results. Fix it."
 }

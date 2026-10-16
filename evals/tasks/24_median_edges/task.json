@@ -1,0 +1,6 @@
+{
+  "id": "24_median_edges",
+  "suite": "hard",
+  "category": "edge_cases",
+  "prompt": "median() in numstats.py gives wrong results for some inputs. Fix it."
+}

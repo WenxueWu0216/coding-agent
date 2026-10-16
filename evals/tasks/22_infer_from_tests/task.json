@@ -1,0 +1,9 @@
+{
+  "id": "22_infer_from_tests",
+  "suite": "hard",
+  "category": "infer_spec",
+  "prompt": "Make the test suite in tests/ pass. Do not modify the tests.",
+  "protected": [
+    "tests/test_duration.py"
+  ]
+}

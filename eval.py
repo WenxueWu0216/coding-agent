@@ -22,14 +22,28 @@ PRICES = {
 }
 
 
-def load_tasks(only=None):
+def load_tasks(only=None, suite="all"):
     tasks = []
     for d in sorted(TASKS_DIR.iterdir()):
         if d.is_dir() and (only is None or any(o in d.name for o in only)):
             meta = json.loads((d / "task.json").read_text())
-            meta["dir"] = d
-            tasks.append(meta)
+            meta.setdefault("suite", "core")
+            meta.setdefault("protected", [])
+            if suite in ("all", meta["suite"]):
+                meta["dir"] = d
+                tasks.append(meta)
     return tasks
+
+
+def tampered_files(task, workspace):
+    """Protected files (e.g. visible tests) the agent was told not to edit, but changed or deleted."""
+    bad = []
+    for rel in task["protected"]:
+        original = (task["dir"] / "repo" / rel).read_bytes()
+        current = workspace / rel
+        if not current.exists() or current.read_bytes() != original:
+            bad.append(rel)
+    return bad
 
 
 def run_hidden_test(task_dir, workspace):
@@ -57,16 +71,20 @@ def validate(tasks):
             before, _ = run_hidden_test(t["dir"], ws)
             shutil.copytree(t["dir"] / "solution", ws, dirs_exist_ok=True)
             after, log = run_hidden_test(t["dir"], ws)
-        good = (not before) and after
+            touches_protected = bool(tampered_files(t, ws))
+        good = (not before) and after and not touches_protected
         ok &= good
-        print(f"{'OK ' if good else 'BAD'} {t['id']:<22} fails_before={not before} passes_after={after}")
+        print(f"{'OK ' if good else 'BAD'} {t['id']:<24} fails_before={not before} passes_after={after}"
+              + ("  solution edits a protected file!" if touches_protected else ""))
         if not after:
             print(log)
     return ok
 
 
-def classify(passed, stats):
+def classify(passed, stats, tampered=False):
     """One failure type per task run, for the error taxonomy."""
+    if tampered:
+        return "tampered"
     if passed:
         return "pass"
     if stats["stop"].startswith("api_error"):
@@ -101,12 +119,16 @@ def run_task(task, model, max_steps, client=None, trace_path=None):
         except Exception as e:
             stats = {**EMPTY_STATS, "stop": f"crash: {type(e).__name__}: {e}"}
         stats["wall_ms"] = round((time.time() - t0) * 1000)
+        tampered = tampered_files(task, ws)
         passed, log = run_hidden_test(task["dir"], ws)
+        if tampered:
+            passed, log = False, f"agent modified protected files: {tampered}"
 
     p_in, p_out = PRICES.get(model, (0, 0))
     cost = stats["input_tokens"] / 1e6 * p_in + stats["output_tokens"] / 1e6 * p_out
-    row = {"task": task["id"], "category": task["category"], "model": model, "passed": passed,
-           "failure_type": classify(passed, stats), "cost_usd": round(cost, 5), **stats,
+    row = {"task": task["id"], "suite": task["suite"], "category": task["category"], "model": model,
+           "passed": passed, "failure_type": classify(passed, stats, bool(tampered)),
+           "tampered": tampered, "cost_usd": round(cost, 5), **stats,
            "test_log": None if passed else log}
     if tracer:
         tracer.event("task_end", passed=passed, failure_type=row["failure_type"], cost_usd=row["cost_usd"])
@@ -128,11 +150,13 @@ def summarize(rows):
         return f"{name:<14}{n:>4}{pr:>9.0%}{calls:>11.1f}{toks:>12,.0f}{cost:>11.4f}"
 
     print(f"\n{'group':<14}{'n':>4}{'pass':>9}{'tools/task':>11}{'tokens/task':>12}{'$/task':>11}")
-    by_cat = defaultdict(list)
-    for r in rows:
-        by_cat[r["category"]].append(r)
-    for cat, rs in sorted(by_cat.items()):
-        print(line(cat, rs))
+    for key in ("suite", "category"):
+        groups = defaultdict(list)
+        for r in rows:
+            groups[r[key]].append(r)
+        for name, rs in sorted(groups.items()):
+            print(line(name, rs))
+        print()
     print(line("ALL", rows))
     print(f"\ntotal cost: ${sum(r['cost_usd'] for r in rows):.4f}")
     fails = [r for r in rows if not r["passed"]]
@@ -145,6 +169,7 @@ def main():
     ap.add_argument("--model", default="claude-sonnet-5-5")
     ap.add_argument("--tasks", nargs="*", help="only run tasks whose id contains one of these")
     ap.add_argument("--repeat", type=int, default=1, help="runs per task (to measure variance)")
+    ap.add_argument("--suite", choices=["core", "hard", "all"], default="all")
     ap.add_argument("--max-steps", type=int, default=20)
     ap.add_argument("--validate", action="store_true", help="check tasks against reference fixes; no API calls")
     args = ap.parse_args()
@@ -154,7 +179,9 @@ def main():
     except ImportError:
         sys.exit(f"pytest is not installed for {sys.executable}\nRun: {sys.executable} -m pip install pytest")
 
-    tasks = load_tasks(args.tasks)
+    tasks = load_tasks(args.tasks, args.suite)
+    if not tasks:
+        sys.exit("no tasks matched")
     if args.validate:
         sys.exit(0 if validate(tasks) else 1)
 
@@ -164,6 +191,7 @@ def main():
     run_dir = RUNS_DIR / run_id
     run_dir.mkdir(parents=True)
     manifest = build_manifest(run_id, args.model, args.max_steps, args.repeat, tasks, PROJECT_DIR)
+    manifest["config"]["suite"] = args.suite
     (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     if manifest["git"]["dirty"]:
         print("warning: uncommitted changes; this run is not reproducible from a commit")
@@ -178,7 +206,7 @@ def main():
                 rows.append(r)
                 f.write(json.dumps(r) + "\n")
                 f.flush()
-                print(f"{'PASS' if r['passed'] else 'FAIL'}  {t['id']:<22} {r['failure_type']:<12} "
+                print(f"{'PASS' if r['passed'] else 'FAIL'}  {t['id']:<24} {r['failure_type']:<12} "
                       f"tools={r['tool_calls']:<3} tokens={r['input_tokens'] + r['output_tokens']:<7,} "
                       f"${r['cost_usd']:.4f}")
     summarize(rows)

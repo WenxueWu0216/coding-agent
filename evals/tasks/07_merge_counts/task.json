@@ -1,5 +1,6 @@
 {
   "id": "07_merge_counts",
+  "suite": "core",
   "category": "bugfix",
   "prompt": "merge_counts() should add up counts for keys present in both dicts, but it overwrites them. Fix counts.py."
 }

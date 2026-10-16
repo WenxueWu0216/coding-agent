@@ -1,0 +1,6 @@
+{
+  "id": "29_csv_no_stdlib",
+  "suite": "hard",
+  "category": "constraint",
+  "prompt": "parse_csv_line() in csvline.py breaks on fields that contain commas inside double quotes. Fix it. Do not use the csv module."
+}

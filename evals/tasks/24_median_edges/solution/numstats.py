@@ -1,0 +1,10 @@
+
+def median(xs):
+    """Return the median of a non-empty list of numbers."""
+    if not xs:
+        raise ValueError("median of empty list")
+    s = sorted(xs)
+    mid = len(s) // 2
+    if len(s) % 2:
+        return s[mid]
+    return (s[mid - 1] + s[mid]) / 2

@@ -1,0 +1,6 @@
+{
+  "id": "25_codebase_search",
+  "suite": "hard",
+  "category": "root_cause",
+  "prompt": "Customers say order totals are way too low whenever they use a discount code. Find the cause in the inventory package and fix it."
+}
