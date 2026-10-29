@@ -229,19 +229,19 @@ Measured on **synthetic data only**, in a separate database (`agent_analytics_be
 
 | Endpoint | Before: server ms | rows read | After: server ms | rows read |
 |---|---|---|---|---|
-| `GET /export?run_id=…&format=json` (25k events) | **332.1** | 5,230,022 | **47.3** | 114,652 |
-| `GET /sessions?task_id&status&model` | 43.3 | 457,856 | 39.7 | 457,856 |
-| `GET /sessions` (first page) | 41.6 | 457,856 | 37.6 | 457,856 |
-| `GET /sessions?since&until` (one day) | 38.1 | 457,856 | 36.1 | 457,856 |
-| `GET /runs/compare` | 33.0 | 915,712 | 32.3 | 915,712 |
-| `GET /sessions/{id}` | 20.6 | 24,576 | 20.0 | 24,576 |
-| `GET /export?session_id=…&format=csv` | 10.9 | 32,768 | 10.1 | 32,768 |
+| `GET /export?run_id=…&format=json` (25k events) | **318.4** | 5,248,192 | **53.3** | 114,688 |
+| `GET /sessions?since&until` (one day) | 41.3 | 457,856 | 43.3 | 457,856 |
+| `GET /sessions?task_id&status&model` | 39.9 | 457,856 | 43.1 | 457,856 |
+| `GET /sessions` (first page) | 37.9 | 457,856 | 39.0 | 457,856 |
+| `GET /runs/compare` | 34.0 | 915,712 | 35.3 | 915,712 |
+| `GET /sessions/{id}` | 21.7 | 24,576 | 19.4 | 32,768 |
+| `GET /export?session_id=…&format=csv` | 10.3 | 32,768 | 12.3 | 49,152 |
 
-Server ms is the sum of the request's ClickHouse queries (the export makes two: an existence check and the stream), median of 7.
+Server ms is the sum of the request's ClickHouse queries (the export makes two: an existence check and the stream), averaged over 7 requests. The single-session rows use a different random session in each measurement, so their small differences are noise, as are the ±3 ms on the endpoints the optimization doesn't touch.
 
-**The slowest query** was exporting one run: `run_id` isn't in the sorting key, so it read all 5.2M rows (1.35 GB) to return 25k. A bloom-filter skip index on `run_id` was tried first and read 5.02M rows: real session ids are random, so every granule of 8,192 rows holds events from most runs and almost nothing can be skipped. **The optimization that worked** is a projection, a second copy of `events` sorted by `(run_id, session_id, ts, seq)`, now part of `schema.sql`. One more detail mattered: with the projection in place ClickHouse still scanned the base table, because the export's `ORDER BY session_id, ts, seq` let it read the base table in sorting-key order, and that plan won. The run export now sets `optimize_read_in_order = 0`, and `system.query_log.projections` confirms the projection is used. Result: **332 ms → 47 ms** server time, 1,352 MB → 19 MB read. End to end the request went from 794 ms to 513 ms; the rest is Python serializing 25k events to JSON.
+**The slowest query** was exporting one run: `run_id` isn't in the sorting key, so it read all 5.2M rows (1.34 GB) to return 25k. A bloom-filter skip index on `run_id` was tried first and read 5.02M rows: real session ids are random, so every granule of 8,192 rows holds events from most runs and almost nothing can be skipped. **The optimization that worked** is a projection, a second copy of `events` sorted by `(run_id, session_id, ts, seq)`, now part of `schema.sql`. One more detail mattered: with the projection in place ClickHouse still scanned the base table, because the export's `ORDER BY session_id, ts, seq` let it read the base table in sorting-key order, and that plan won. The run export now sets `optimize_read_in_order = 0`, and `system.query_log.projections` confirms the projection is used. Result: **318 ms → 53 ms** server time, 1,336 MB → 19 MB read. End to end the request went from 786 ms to 526 ms; the rest is Python serializing 25k events (17.7 MB of JSON).
 
-The cost is storage: the projection is 353 MiB compressed (`system.projection_parts`) next to 399 MiB for the table (`system.parts`), and every insert writes both. The `/sessions` queries read the whole `sessions` table (458k rows) each time; at ~40 ms that isn't worth optimizing yet.
+The cost is storage: the projection is 351 MiB compressed (`system.projection_parts`) next to 396 MiB for the table (`system.parts`), and every insert writes both. The `/sessions` queries read the whole `sessions` table (458k rows) each time; at ~40 ms that isn't worth optimizing yet.
 
 To reproduce:
 
