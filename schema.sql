@@ -34,11 +34,16 @@ CREATE TABLE IF NOT EXISTS {db}.events
     failure_root_cause LowCardinality(String),   -- run_end only
     attrs              String,                   -- remaining event fields as JSON
     source_file        String,
-    ingested_at        DateTime64(3, 'UTC')
+    ingested_at        DateTime64(3, 'UTC'),
+    -- Exports and comparisons by run_id would otherwise scan the whole table: run_id is not in
+    -- the sorting key, and a skip index can't help because a run's sessions are spread over
+    -- every granule. Costs a second sorted copy of the table (see README, Performance).
+    PROJECTION by_run (SELECT * ORDER BY run_id, session_id, ts, seq)
 )
 ENGINE = ReplacingMergeTree(ingested_at)
 PARTITION BY toYYYYMM(ts)
-ORDER BY (session_id, ts, event_id);
+ORDER BY (session_id, ts, event_id)
+SETTINGS deduplicate_merge_projection_mode = 'rebuild';
 
 -- One row per finished session, built from its run_end event (which carries the totals).
 -- Sessions that never wrote run_end (crashed, or still running) appear only in events.

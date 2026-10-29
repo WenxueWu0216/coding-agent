@@ -143,9 +143,14 @@ def create_app(client=None, db: Optional[str] = None) -> FastAPI:
             raise HTTPException(404, f"no events for {key} {value!r}")
         sql = f"SELECT {', '.join(EVENT_COLUMNS)} FROM {db}.events WHERE {where} ORDER BY session_id, ts, seq"
 
+        settings = {"max_block_size": EXPORT_BLOCK_ROWS}
+        if key == "run_id":
+            # Otherwise the planner prefers reading the base table in session_id order and never
+            # considers the by_run projection: 5M rows read instead of one run's.
+            settings["optimize_read_in_order"] = 0
+
         def blocks() -> Iterator[list]:
-            with ch().query_row_block_stream(sql, parameters={"v": value},
-                                             settings={"max_block_size": EXPORT_BLOCK_ROWS}) as stream:
+            with ch().query_row_block_stream(sql, parameters={"v": value}, settings=settings) as stream:
                 yield from stream
 
         def as_csv() -> Iterator[str]:
