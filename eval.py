@@ -91,6 +91,8 @@ def classify(passed, stats, tampered=False):
         return "api_error"
     if stats["stop"].startswith("crash"):
         return "harness_crash"
+    if stats["stop"] == "rolled_back":
+        return "rolled_back"
     if stats["stop"] == "step_limit":
         return "step_limit"
     if stats["edits"] == 0:
@@ -98,7 +100,7 @@ def classify(passed, stats, tampered=False):
     return "wrong_fix"
 
 
-def run_task(task, model, max_steps, client=None, trace_path=None):
+def run_task(task, model, max_steps, client=None, trace_path=None, verify=True):
     import anthropic
     from agent import Agent, auto_approve
     from tracing import Tracer
@@ -108,7 +110,7 @@ def run_task(task, model, max_steps, client=None, trace_path=None):
         ws = Path(tmp)
         shutil.copytree(task["dir"] / "repo", ws, dirs_exist_ok=True)
         agent = Agent(workspace=ws, model=model, approver=auto_approve, max_steps=max_steps,
-                      client=client, verbose=False)
+                      client=client, verbose=False, verify=verify)
         if tracer:
             tracer.event("task_start", task=task["id"], prompt=task["prompt"])
         t0 = time.time()
@@ -127,6 +129,7 @@ def run_task(task, model, max_steps, client=None, trace_path=None):
     p_in, p_out = PRICES.get(model, (0, 0))
     cost = stats["input_tokens"] / 1e6 * p_in + stats["output_tokens"] / 1e6 * p_out
     row = {"task": task["id"], "suite": task["suite"], "category": task["category"], "model": model,
+           "verify": verify,
            "passed": passed, "failure_type": classify(passed, stats, bool(tampered)),
            "tampered": tampered, "cost_usd": round(cost, 5), **stats,
            "test_log": None if passed else log}
@@ -137,7 +140,8 @@ def run_task(task, model, max_steps, client=None, trace_path=None):
 
 
 EMPTY_STATS = {"steps": 0, "tool_calls": 0, "edits": 0, "tool_errors": 0, "error_kinds": {},
-               "input_tokens": 0, "output_tokens": 0, "model_ms": 0, "tool_ms": 0}
+               "input_tokens": 0, "output_tokens": 0, "model_ms": 0, "tool_ms": 0,
+               "verify_runs": 0, "verify_failures": 0}
 
 
 def summarize(rows):
@@ -171,6 +175,7 @@ def main():
     ap.add_argument("--repeat", type=int, default=1, help="runs per task (to measure variance)")
     ap.add_argument("--suite", choices=["core", "hard", "all"], default="all")
     ap.add_argument("--max-steps", type=int, default=20)
+    ap.add_argument("--no-verify", action="store_true", help="disable the lint/test completion gate")
     ap.add_argument("--validate", action="store_true", help="check tasks against reference fixes; no API calls")
     args = ap.parse_args()
 
@@ -187,11 +192,12 @@ def main():
 
     from tracing import build_manifest
 
-    run_id = f"{datetime.now():%Y%m%d-%H%M%S}_{args.model}"
+    run_id = f"{datetime.now():%Y%m%d-%H%M%S}_{args.model}" + ("_noverify" if args.no_verify else "")
     run_dir = RUNS_DIR / run_id
     run_dir.mkdir(parents=True)
     manifest = build_manifest(run_id, args.model, args.max_steps, args.repeat, tasks, PROJECT_DIR)
     manifest["config"]["suite"] = args.suite
+    manifest["config"]["verify"] = not args.no_verify
     (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     if manifest["git"]["dirty"]:
         print("warning: uncommitted changes; this run is not reproducible from a commit")
@@ -201,7 +207,7 @@ def main():
         for i in range(args.repeat):
             for t in tasks:
                 trace_path = run_dir / "traces" / f"{t['id']}__r{i}.jsonl"
-                r = run_task(t, args.model, args.max_steps, trace_path=trace_path)
+                r = run_task(t, args.model, args.max_steps, trace_path=trace_path, verify=not args.no_verify)
                 r["run_id"], r["repeat"] = run_id, i
                 rows.append(r)
                 f.write(json.dumps(r) + "\n")

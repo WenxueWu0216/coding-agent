@@ -70,6 +70,13 @@ def summary(run_dir):
         for kind, n in kinds.most_common():
             print(f"  {kind:<14} {n}")
 
+    vr = sum(r.get("verify_runs", 0) for r in rows)
+    if vr:
+        vf = sum(r.get("verify_failures", 0) for r in rows)
+        caught = sum(1 for r in rows if r.get("verify_failures") and r["passed"])
+        print(f"\ncompletion gate")
+        print(f"  checks run {vr}   failed {vf}   task runs that failed a check and still passed: {caught}")
+
     wall = [r["wall_ms"] for r in rows]
     model_ms = sum(r["model_ms"] for r in rows)
     tool_ms = sum(r["tool_ms"] for r in rows)
@@ -154,6 +161,11 @@ def show_trace(run_dir, task):
                 flag = f"  ERROR[{e['error']}]" if e["error"] else ""
                 print(f"{t}  TOOL   {e['tool']}({json.dumps(e['args'])[:150]}){flag}")
                 print(f"         -> {e['output'][:200]!r}")
+            elif e["type"] == "verify":
+                status = "ok" if e["ok"] else f"NEW FAILURES {e['new_failures']}"
+                print(f"{t}  VERIFY {e['latency_ms']}ms  {status}")
+            elif e["type"] == "rollback":
+                print(f"{t}  ROLLBACK {e['files']}")
             elif e["type"] == "api_error":
                 print(f"{t}  API    {e['error']}: {e['message']}")
             elif e["type"] == "task_end":

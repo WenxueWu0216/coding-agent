@@ -6,6 +6,7 @@ from pathlib import Path
 
 import anthropic
 from safety import PolicyError, check_command, safe_path
+from verify import Verifier
 
 MODEL = "claude-sonnet-5-5"
 
@@ -57,13 +58,15 @@ def auto_approve(name, args):
 
 
 class Agent:
-    def __init__(self, workspace=".", model=MODEL, approver=ask_user, max_steps=20, client=None, verbose=True):
+    def __init__(self, workspace=".", model=MODEL, approver=ask_user, max_steps=20, client=None, verbose=True,
+                 verify=True, max_verify_attempts=3):
         self.root = Path(workspace).resolve()
         self.model = model
         self.approver = approver
         self.max_steps = max_steps
         self.client = client or anthropic.Anthropic()
         self.verbose = verbose
+        self.verifier = Verifier(self.root, max_verify_attempts) if verify else None
 
     def log(self, msg):
         if self.verbose:
@@ -78,6 +81,7 @@ class Agent:
         if old_str == "":
             if p.exists():
                 raise ToolError("edit_mismatch", "file already exists; give a non-empty old_str to edit it")
+            self._before_write(p)
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(new_str, encoding="utf-8")
             return f"Created {path}"
@@ -85,8 +89,13 @@ class Agent:
         count = text.count(old_str)
         if count != 1:
             raise ToolError("edit_mismatch", f"old_str matched {count} times; it must match exactly once")
+        self._before_write(p)
         p.write_text(text.replace(old_str, new_str), encoding="utf-8")
         return f"Edited {path}"
+
+    def _before_write(self, path):
+        if self.verifier:
+            self.verifier.before_write(path)
 
     def run_bash(self, command):
         args = check_command(command)
@@ -122,35 +131,81 @@ class Agent:
             return f"Error: {e}", "tool_error"
 
     # ---------- loop ----------
+    def _call(self, messages, stats, trace, step, **extra):
+        t0 = time.time()
+        try:
+            response = self.client.messages.create(
+                model=self.model, max_tokens=4096, system=SYSTEM, tools=TOOLS, messages=messages, **extra,
+            )
+        except Exception as e:
+            trace("api_error", step=step, error=type(e).__name__, message=str(e)[:300])
+            raise
+        ms = round((time.time() - t0) * 1000)
+        u = response.usage
+        stats["steps"] = step
+        stats["model_ms"] += ms
+        stats["input_tokens"] += u.input_tokens
+        stats["output_tokens"] += u.output_tokens
+        texts = [b.text for b in response.content if b.type == "text"]
+        trace("model_call", step=step, latency_ms=ms, input_tokens=u.input_tokens,
+              output_tokens=u.output_tokens, stop_reason=response.stop_reason, text=" ".join(texts)[:500])
+        messages.append({"role": "assistant", "content": response.content})
+        for t in texts:
+            self.log(f"\nClaude: {t}")
+        return response
+
+    def _completion_gate(self, messages, stats, trace, step):
+        """Runs when the model says it's done. Returns True if the turn may end."""
+        v = self.verifier
+        if not v or not (v.dirty or v.strikes):   # nothing changed and nothing outstanding
+            return True
+        t0 = time.time()
+        new, report = v.check()
+        ms = round((time.time() - t0) * 1000)
+        stats["verify_runs"] += 1
+        stats["tool_ms"] += ms
+        trace("verify", step=step, ok=not new, new_failures=new[:20], latency_ms=ms)
+        if not new:
+            v.strikes = 0
+            self.log("  [verify] lint and tests passed")
+            return True
+
+        v.strikes += 1
+        stats["verify_failures"] += 1
+        self.log(f"  [verify] {len(new)} new problem(s), attempt {v.strikes}/{v.max_attempts}")
+        if v.strikes < v.max_attempts:
+            messages.append({"role": "user", "content": (
+                f"Automatic verification ran after you finished and found problems your edits introduced "
+                f"(attempt {v.strikes} of {v.max_attempts}; after {v.max_attempts} failed attempts all your "
+                f"edits from this turn are rolled back). Fix them, then finish again.\n\n{report}")})
+            return False
+
+        restored = v.rollback()
+        stats["stop"] = "rolled_back"
+        trace("rollback", step=step, files=restored)
+        self.log(f"  [verify] rolled back {restored}")
+        messages.append({"role": "user", "content": (
+            f"Automatic verification failed {v.max_attempts} times in a row, so every edit you made this "
+            f"turn was rolled back: {restored}. Briefly tell the user what you tried and what went wrong.\n\n"
+            f"{report}")})
+        self._call(messages, stats, trace, step + 1, tool_choice={"type": "none"})
+        return True
+
     def run(self, messages, tracer=None):
         trace = tracer.event if tracer else (lambda *a, **k: None)
         stats = {"steps": 0, "tool_calls": 0, "edits": 0, "tool_errors": 0, "error_kinds": {},
-                 "input_tokens": 0, "output_tokens": 0, "model_ms": 0, "tool_ms": 0, "stop": "step_limit"}
+                 "input_tokens": 0, "output_tokens": 0, "model_ms": 0, "tool_ms": 0,
+                 "verify_runs": 0, "verify_failures": 0, "stop": "step_limit"}
+        if self.verifier:
+            self.verifier.reset()
         for step in range(1, self.max_steps + 1):
-            t0 = time.time()
-            try:
-                response = self.client.messages.create(
-                    model=self.model, max_tokens=4096, system=SYSTEM, tools=TOOLS, messages=messages,
-                )
-            except Exception as e:
-                trace("api_error", step=step, error=type(e).__name__, message=str(e)[:300])
-                raise
-            ms = round((time.time() - t0) * 1000)
-            u = response.usage
-            stats["steps"] = step
-            stats["model_ms"] += ms
-            stats["input_tokens"] += u.input_tokens
-            stats["output_tokens"] += u.output_tokens
-            texts = [b.text for b in response.content if b.type == "text"]
-            trace("model_call", step=step, latency_ms=ms, input_tokens=u.input_tokens,
-                  output_tokens=u.output_tokens, stop_reason=response.stop_reason, text=" ".join(texts)[:500])
-
-            messages.append({"role": "assistant", "content": response.content})
-            for t in texts:
-                self.log(f"\nClaude: {t}")
+            response = self._call(messages, stats, trace, step)
             if response.stop_reason != "tool_use":
-                stats["stop"] = "done"
-                return stats
+                if self._completion_gate(messages, stats, trace, step):
+                    if stats["stop"] != "rolled_back":
+                        stats["stop"] = "done"
+                    return stats
+                continue
 
             results = []
             for block in response.content:
@@ -178,7 +233,13 @@ class Agent:
 
 
 def main():
-    agent = Agent()
+    import argparse
+    ap = argparse.ArgumentParser(description="A coding agent that works in the current directory.")
+    ap.add_argument("--model", default=MODEL)
+    ap.add_argument("--no-verify", action="store_true", help="skip lint/tests when the agent finishes")
+    args = ap.parse_args()
+
+    agent = Agent(model=args.model, verify=not args.no_verify)
     messages = []
     while True:
         user_input = input("\nYou: ")
