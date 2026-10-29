@@ -54,6 +54,29 @@ flowchart LR
 | `edit_file` | Exact string replacement. `old_str` must match **exactly once**, so an ambiguous edit fails loudly instead of changing the wrong spot. Empty `old_str` creates a new file but never overwrites one. |
 | `run_bash` | Runs an allowlisted command (`ls`, `cat`, `grep`, `pytest`, `python`, …) as an argument list with no shell, a 30s timeout, and output truncated to the last 4,000 characters. |
 
+### Hunk-level diff review
+In interactive mode, an edit is a proposal, not a write. The agent computes the new file, the CLI shows a colored unified diff split into hunks, and for each hunk you choose:
+
+| Key | Action |
+|---|---|
+| `y` / `n` | accept / reject this hunk |
+| `e` | open the proposed lines in `$EDITOR` and use your version |
+| `a` / `d` | accept / reject this and all remaining hunks |
+
+Only the chosen result is written. The tool result tells the model exactly what happened ("2 accepted, 1 rejected; rejected hunks were NOT applied"), so it doesn't assume its full edit landed. Rejecting every hunk writes nothing and returns a `denied` error asking the model to check with you. The diff review replaces the generic yes/no approval for edits; shell commands still use the approval prompt.
+
+### Checkpoints and `/undo`
+Before every turn, the CLI snapshots the working tree as a commit on a private ref, `refs/agent/checkpoints`. The snapshot is built with a temporary index, so **your branch, HEAD, and staging area are never touched**, and `.gitignore`d files (like `.env` or `.venv`) are never captured or overwritten.
+
+| Command | What it does |
+|---|---|
+| `/undo` | Revert every file change from the last turn that changed something, including deleting files it created |
+| `/redo` | Re-apply the last undone turn |
+| `/diff` | Show what the last turn changed |
+| `/cost` | Tokens and dollar cost for the session |
+
+Turns that change nothing are dropped from the undo stack, so `/undo` always reverts real work. After an undo, the model is told on its next turn that its changes were reverted, so it doesn't build on files that no longer exist. Requires the project to be a git repository.
+
 ### Completion gate: verify, feed back, roll back
 When the agent says it's done, the gate checks its work before the turn can end:
 
@@ -102,8 +125,8 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 
 Interactive agent:
 ```bash
-python agent.py              # lint/test gate on by default
-python agent.py --no-verify  # skip it
+python cli.py                # diff review, /undo, lint/test gate
+python cli.py --no-verify    # skip the lint/test gate
 ```
 
 Evaluation:
@@ -125,8 +148,12 @@ pytest -q
 ## Project structure
 
 ```
+cli.py            Interactive session: slash commands, checkpoints per turn, cost tracking
 agent.py          Agent loop, tools, approval gate, typed tool errors
+checkpoints.py    Git snapshots on a private ref; undo/redo per turn
+pricing.py        Model prices and cost calculation
 verify.py         Completion gate: lint, baseline-aware tests, rollback
+review.py         Hunk-level diff review: split, render, apply accepted hunks
 safety.py         Path sandbox and command allowlist
 eval.py           Eval harness: task runner, hidden tests, scoring, failure taxonomy
 tracing.py        JSONL tracer and versioned run manifest
@@ -136,6 +163,8 @@ evals/runs/       Run outputs (git-ignored): manifest.json, results.jsonl, trace
 test_safety.py    18 security tests
 test_eval.py      Harness, tracing, taxonomy, and regression tests
 test_verify.py    Completion gate: feedback, rollback, baseline handling
+test_review.py    Hunk splitting, partial apply, user edits, agent integration
+test_checkpoints.py  Undo/redo, untouched user git state, ignored files, CLI session
 ```
 
 ## Roadmap
@@ -146,6 +175,9 @@ test_verify.py    Completion gate: feedback, rollback, baseline handling
 - [x] Observability: traces, run manifests, error taxonomy, regression reports
 - [x] Hard task suite with tamper detection
 - [x] Completion gate: lint + tests on finish, feedback, rollback
+- [x] Hunk-level diff review (accept / reject / edit per hunk)
+- [x] Git checkpoints, `/undo`, `/redo`, `/diff`, `/cost`
+- [ ] pipx packaging, CI, demo GIF
 - [ ] Reliability: retries with exponential backoff, circuit breaker, record/replay of model calls
 - [ ] CI regression gate in GitHub Actions
 - [ ] Docker sandbox for tool execution

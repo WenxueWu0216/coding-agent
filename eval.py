@@ -10,17 +10,11 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
+from pricing import cost_usd
+
 TASKS_DIR = Path(__file__).resolve().parent / "evals" / "tasks"
 PROJECT_DIR = Path(__file__).resolve().parent
 RUNS_DIR = PROJECT_DIR / "evals" / "runs"
-
-# USD per million tokens (input, output), from the Claude pricing page
-PRICES = {
-    "claude-sonnet-5-5": (2.00, 10.00),
-    "claude-haiku-5-5": (0.10, 0.50),
-    "claude-opus-5-5": (4.00, 20.00),
-}
-
 
 def load_tasks(only=None, suite="all"):
     tasks = []
@@ -126,8 +120,7 @@ def run_task(task, model, max_steps, client=None, trace_path=None, verify=True):
         if tampered:
             passed, log = False, f"agent modified protected files: {tampered}"
 
-    p_in, p_out = PRICES.get(model, (0, 0))
-    cost = stats["input_tokens"] / 1e6 * p_in + stats["output_tokens"] / 1e6 * p_out
+    cost = cost_usd(model, stats["input_tokens"], stats["output_tokens"])
     row = {"task": task["id"], "suite": task["suite"], "category": task["category"], "model": model,
            "verify": verify,
            "passed": passed, "failure_type": classify(passed, stats, bool(tampered)),

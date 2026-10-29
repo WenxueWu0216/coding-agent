@@ -42,3 +42,15 @@ def test_symlink_escape_is_blocked(tmp_path):
 
 def test_normal_path_is_allowed(tmp_path):
     assert safe_path("src/main.py", root=tmp_path) == tmp_path / "src" / "main.py"
+
+
+def test_read_only_commands_skip_approval(tmp_path):
+    from agent import Agent
+    asked = []
+    a = Agent(workspace=tmp_path, approver=lambda n, args: asked.append(args["command"]) or False,
+              client=object(), verbose=False, verify=False)
+    assert a.run_tool("run_bash", {"command": "ls"})[1] is None
+    assert a.run_tool("run_bash", {"command": "grep -rn foo ."})[1] is None
+    assert a.run_tool("run_bash", {"command": "pytest -q"})[1] == "denied"      # can run arbitrary code
+    assert a.run_tool("run_bash", {"command": "rm -rf ."})[1] == "policy_block"  # blocked before asking
+    assert asked == ["pytest -q"]

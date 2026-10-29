@@ -1,4 +1,5 @@
 import os
+import shlex
 import subprocess
 import sys
 import time
@@ -37,7 +38,27 @@ TOOLS = [
     },
 ]
 
+COMMAND_TIMEOUT = 120   # seconds; real test suites often take longer than 30s
 NEEDS_APPROVAL = {"edit_file", "run_bash"}
+READ_ONLY_COMMANDS = {"ls", "cat", "head", "tail", "wc", "grep"}   # can't change anything: no approval prompt
+
+
+def is_read_only(name, args):
+    if name != "run_bash":
+        return False
+    try:
+        return shlex.split(args.get("command", ""))[:1] in ([c] for c in READ_ONLY_COMMANDS)
+    except ValueError:
+        return False
+
+
+def describe(name, args):
+    """Short, readable label for a tool call in the terminal."""
+    if name in ("read_file", "edit_file"):
+        return f"{name} {args.get('path', '?')}"
+    if name == "run_bash":
+        return f"$ {args.get('command', '')}"
+    return f"{name}({args})"
 
 
 class ToolError(Exception):
@@ -49,8 +70,12 @@ class ToolError(Exception):
 
 
 def ask_user(name, args):
-    print(f"\n  Claude wants to run {name}: {args}")
-    return input("  Allow? [y/N] ").strip().lower() == "y"
+    print(f"\n  Claude wants to run: {describe(name, args)}")
+    while True:
+        answer = input("  Allow? [y/N] ").strip().lower()
+        if not answer.startswith("/"):
+            return answer == "y"
+        print("  (slash commands work at the You: prompt; answer y or n here)")
 
 
 def auto_approve(name, args):
@@ -59,14 +84,15 @@ def auto_approve(name, args):
 
 class Agent:
     def __init__(self, workspace=".", model=MODEL, approver=ask_user, max_steps=20, client=None, verbose=True,
-                 verify=True, max_verify_attempts=3):
+                 verify=True, max_verify_attempts=3, reviewer=None):
         self.root = Path(workspace).resolve()
         self.model = model
         self.approver = approver
         self.max_steps = max_steps
         self.client = client or anthropic.Anthropic()
         self.verbose = verbose
-        self.verifier = Verifier(self.root, max_verify_attempts) if verify else None
+        self.verifier = Verifier(self.root, max_verify_attempts, log=self.log) if verify else None
+        self.reviewer = reviewer   # (path, old_text, new_text) -> ReviewResult; None = apply without review
 
     def log(self, msg):
         if self.verbose:
@@ -81,17 +107,26 @@ class Agent:
         if old_str == "":
             if p.exists():
                 raise ToolError("edit_mismatch", "file already exists; give a non-empty old_str to edit it")
-            self._before_write(p)
-            p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text(new_str, encoding="utf-8")
-            return f"Created {path}"
-        text = p.read_text(encoding="utf-8")
-        count = text.count(old_str)
-        if count != 1:
-            raise ToolError("edit_mismatch", f"old_str matched {count} times; it must match exactly once")
+            old_text, new_text = "", new_str
+        else:
+            old_text = p.read_text(encoding="utf-8")
+            count = old_text.count(old_str)
+            if count != 1:
+                raise ToolError("edit_mismatch", f"old_str matched {count} times; it must match exactly once")
+            new_text = old_text.replace(old_str, new_str)
+
+        note = ""
+        if self.reviewer:
+            result = self.reviewer(path, old_text, new_text)
+            if result.accepted == 0 and result.edited == 0:
+                raise ToolError("denied", "the user rejected every hunk of this edit; nothing was written. "
+                                          "Ask them what they want instead.")
+            new_text, note = result.text, " " + result.summary()
+
         self._before_write(p)
-        p.write_text(text.replace(old_str, new_str), encoding="utf-8")
-        return f"Edited {path}"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(new_text, encoding="utf-8")
+        return f"{'Created' if old_str == '' else 'Edited'} {path}.{note}"
 
     def _before_write(self, path):
         if self.verifier:
@@ -103,7 +138,7 @@ class Agent:
             args[0] = sys.executable
         elif args[0] == "pytest":
             args = [sys.executable, "-m", "pytest"] + args[1:]
-        r = subprocess.run(args, capture_output=True, text=True, timeout=30, cwd=self.root,
+        r = subprocess.run(args, capture_output=True, text=True, timeout=COMMAND_TIMEOUT, cwd=self.root,
                            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
         out = (r.stdout + r.stderr)[-4000:]
         return f"exit code {r.returncode}\n{out}"
@@ -114,7 +149,11 @@ class Agent:
         if name not in handlers:
             return f"Error: unknown tool {name}", "unknown_tool"
         try:
-            if name in NEEDS_APPROVAL and not self.approver(name, args):
+            reviewed_elsewhere = name == "edit_file" and self.reviewer   # the diff review is the approval
+            if name == "run_bash":
+                check_command(args.get("command", ""))   # don't ask the user about something policy blocks anyway
+            needs_ok = name in NEEDS_APPROVAL and not reviewed_elsewhere and not is_read_only(name, args)
+            if needs_ok and not self.approver(name, args):
                 return "Error: the user denied this action. Ask them what to do instead.", "denied"
             return handlers[name](**args), None
         except PolicyError as e:
@@ -122,7 +161,8 @@ class Agent:
         except ToolError as e:
             return f"Error: {e}", e.kind
         except subprocess.TimeoutExpired:
-            return "Error: command timed out after 30s", "timeout"
+            return (f"Error: command timed out after {COMMAND_TIMEOUT}s. If this was a test run, "
+                    "run a narrower selection, e.g. one test file."), "timeout"
         except FileNotFoundError as e:
             return f"Error: {e}", "file_not_found"
         except TypeError as e:
@@ -167,6 +207,7 @@ class Agent:
         trace("verify", step=step, ok=not new, new_failures=new[:20], latency_ms=ms)
         if not new:
             v.strikes = 0
+            stats["verified"] = True
             self.log("  [verify] lint and tests passed")
             return True
 
@@ -196,6 +237,7 @@ class Agent:
         stats = {"steps": 0, "tool_calls": 0, "edits": 0, "tool_errors": 0, "error_kinds": {},
                  "input_tokens": 0, "output_tokens": 0, "model_ms": 0, "tool_ms": 0,
                  "verify_runs": 0, "verify_failures": 0, "stop": "step_limit"}
+        stats["verified"] = False
         if self.verifier:
             self.verifier.reset()
         for step in range(1, self.max_steps + 1):
@@ -212,7 +254,7 @@ class Agent:
                 if block.type != "tool_use":
                     continue
                 stats["tool_calls"] += 1
-                self.log(f"  [tool] {block.name}({block.input})")
+                self.log(f"  [tool] {describe(block.name, block.input)}")
                 t0 = time.time()
                 output, err = self.run_tool(block.name, block.input)
                 ms = round((time.time() - t0) * 1000)
@@ -232,22 +274,6 @@ class Agent:
         return stats
 
 
-def main():
-    import argparse
-    ap = argparse.ArgumentParser(description="A coding agent that works in the current directory.")
-    ap.add_argument("--model", default=MODEL)
-    ap.add_argument("--no-verify", action="store_true", help="skip lint/tests when the agent finishes")
-    args = ap.parse_args()
-
-    agent = Agent(model=args.model, verify=not args.no_verify)
-    messages = []
-    while True:
-        user_input = input("\nYou: ")
-        if user_input.strip() in ("exit", "quit"):
-            break
-        messages.append({"role": "user", "content": user_input})
-        agent.run(messages)
-
-
 if __name__ == "__main__":
+    from cli import main
     main()
