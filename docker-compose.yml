@@ -1,0 +1,21 @@
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8
+    container_name: agent-analytics-clickhouse
+    ports:
+      - "127.0.0.1:8123:8123"   # HTTP, used by loader.py and the API
+      - "127.0.0.1:9000:9000"   # native protocol, for clickhouse-client
+    environment:
+      # Local development only: the default user has no password and is bound to localhost.
+      CLICKHOUSE_SKIP_USER_SETUP: "1"
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8123/ping"]
+      interval: 2s
+      retries: 30
+
+volumes:
+  clickhouse-data:
