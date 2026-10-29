@@ -12,6 +12,7 @@ is still loaded.
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from dataclasses import dataclass, field
@@ -27,12 +28,12 @@ SCHEMA = PROJECT_DIR / "schema.sql"
 DEFAULT_DB = os.environ.get("CLICKHOUSE_DB", "agent_analytics")
 DEFAULT_URL = os.environ.get("CLICKHOUSE_URL", "http://localhost:8123")
 
-COLUMNS = ["run_id", "session_id", "event_id", "parent_event_id", "ts", "type", "model", "input_tokens",
+COLUMNS = ["run_id", "session_id", "event_id", "parent_event_id", "ts", "seq", "type", "model", "input_tokens",
            "output_tokens", "latency_ms", "tool_name", "tool_args_hash", "args_size_bytes", "status", "error",
            "cost_usd", "step", "task_id", "suite", "passed", "failure_type", "failure_root_cause", "attrs",
            "source_file", "ingested_at"]
 REQUIRED_STR = ("run_id", "session_id", "event_id", "type")
-NON_NEGATIVE_INT = ("input_tokens", "output_tokens", "latency_ms", "args_size_bytes")
+NON_NEGATIVE_INT = ("seq", "input_tokens", "output_tokens", "latency_ms", "args_size_bytes")
 UINT32_MAX = 2**32 - 1
 
 
@@ -101,12 +102,12 @@ def validate(e: Any) -> dict:
     return {**e, "type": kind}
 
 
-def to_row(e: dict, source: str, task_id: str, suite: str, now: datetime) -> list[Any]:
+def to_row(e: dict, seq: int, source: str, task_id: str, suite: str, now: datetime) -> list[Any]:
     extra = {k: v for k, v in e.items() if k not in ENVELOPE and k not in
-             ("step", "task_id", "suite", "passed", "failure_type", "failure_root_cause")}
+             ("seq", "step", "task_id", "suite", "passed", "failure_type", "failure_root_cause")}
     passed = e.get("passed")
-    return [e["run_id"], e["session_id"], e["event_id"], e.get("parent_event_id"), parse_ts(e["ts"]), e["type"],
-            e.get("model") or "", e.get("input_tokens", 0), e.get("output_tokens", 0), e.get("latency_ms", 0),
+    return [e["run_id"], e["session_id"], e["event_id"], e.get("parent_event_id"), parse_ts(e["ts"]), seq,
+            e["type"], e.get("model") or "", e.get("input_tokens", 0), e.get("output_tokens", 0), e.get("latency_ms", 0),
             e.get("tool_name") or "", e.get("tool_args_hash") or "", e.get("args_size_bytes", 0),
             e.get("status") or "", e.get("error") or "", float(e.get("cost_usd", 0.0)),
             int(e.get("step") or 0), e.get("task_id") or task_id, e.get("suite") or suite,
@@ -129,8 +130,9 @@ def read_file(path: Path, batch: Batch, now: Optional[datetime] = None) -> None:
         except BadRow as ex:
             batch.rejects.append(Reject(source, n, str(ex), line[:2000]))
     start = next((e for _, e in events if e["type"] == "run_start"), {})
-    for _, e in events:
-        batch.rows.append(to_row(e, source, start.get("task_id", ""), start.get("suite", ""), now))
+    for n, e in events:
+        task_id, suite = start.get("task_id", ""), start.get("suite", "")
+        batch.rows.append(to_row(e, e.get("seq", n), source, task_id, suite, now))
 
 
 def trace_files(paths: Iterable[Path]) -> list[Path]:
@@ -166,8 +168,8 @@ def connect(url: str = DEFAULT_URL, **kw: Any):
 
 def ensure_schema(client, db: str) -> None:
     sql = SCHEMA.read_text().replace("{db}", db)
-    lines = [l for l in sql.splitlines() if not l.strip().startswith("--")]
-    for stmt in "\n".join(lines).split(";"):
+    sql = re.sub(r"--[^\n]*", "", sql)   # comments may contain ';'. The schema has no '--' inside strings.
+    for stmt in sql.split(";"):
         if stmt.strip():
             client.command(stmt)
 
