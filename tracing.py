@@ -90,7 +90,8 @@ class Tracer:
         row: dict[str, Any] = {**ENVELOPE, "t_ms": round((time.time() - self.t0) * 1000), "type": type,
                                "run_id": self.run_id, "session_id": self.session_id,
                                "event_id": uuid.uuid4().hex, "parent_event_id": parent, "ts": utc_ms(),
-                               "model": self.model}
+                               "model": self.model,
+                               "seq": len(self.events)}   # orders events that share a millisecond
         if fields.get("tool_name") and "args" in fields:
             row["tool_args_hash"] = sha(fields["args"], 16)
             row["args_size_bytes"] = size_bytes(fields["args"])

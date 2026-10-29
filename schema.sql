@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS {db}.events
     event_id           String,
     parent_event_id    Nullable(String),
     ts                 DateTime64(3, 'UTC'),
+    seq                UInt32,                   -- position in the trace file; breaks ts ties
     type               LowCardinality(String),
     model              LowCardinality(String),
     input_tokens       UInt32,
