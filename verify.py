@@ -64,9 +64,10 @@ def run_tests(root):
 
 
 class Verifier:
-    def __init__(self, root, max_attempts=3):
+    def __init__(self, root, max_attempts=3, log=None):
         self.root = Path(root).resolve()
         self.max_attempts = max_attempts
+        self.log = log or (lambda msg: None)
         self.reset()
 
     def reset(self):

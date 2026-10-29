@@ -4,3 +4,8 @@ __pycache__/
 .venv/
 evals/runs/
 .DS_Store
+traces/
+evals/synthetic/
+explorer/node_modules/
+explorer/dist/
+.env
