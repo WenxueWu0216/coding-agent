@@ -92,7 +92,9 @@ def load_and_replay(client, db: str, seed_paths: list[Path]) -> None:
                 seq, type,
                 ['claude-haiku-5-5', 'claude-sonnet-5-5', 'claude-opus-5-5'][1 + (k % 3)] AS model,
                 input_tokens, output_tokens, latency_ms, tool_name, tool_args_hash, args_size_bytes, status,
-                error, cost_usd, step, task_id, suite, passed, failure_type, failure_root_cause, attrs,
+                error, cost_usd, step, task_id, suite, passed, failure_type, failure_root_cause,
+                -- drop the seed's started_at so the sessions view derives it from the shifted ts
+                replaceRegexpOne(attrs, ', "started_at": "[^"]*"', '') AS attrs,
                 'synthetic' AS source_file, now64(3) AS ingested_at
             FROM {staging}
             ARRAY JOIN range({lo}, {hi}) AS k
@@ -139,7 +141,8 @@ def measure(url: str, db: str, label: str) -> dict[str, dict]:
             r = http.get(path, params=params)
             wall.append((time.perf_counter() - t0) * 1000)
             assert r.status_code == 200, (name, r.status_code, r.text[:200])
-        results[name] = {"wall_ms": statistics.median(wall), "bytes": len(r.content)}
+        results[name] = {"wall_ms": statistics.median(wall), "bytes": len(r.content),
+                         "items": len(r.json().get("items", [])) if path == "/sessions" else None}
     base.command("SYSTEM FLUSH LOGS")
     rows = base.query("""
         SELECT log_comment, count(), sum(query_duration_ms), sum(read_rows), sum(read_bytes)
@@ -150,11 +153,13 @@ def measure(url: str, db: str, label: str) -> dict[str, dict]:
         name = comment.split(":", 1)[1]
         results[name].update(queries=n, server_ms=dur / REPEATS, read_rows=read_rows // REPEATS,
                              read_mb=read_bytes / REPEATS / 1e6)
-    print(f"\n{label}: medians over {REPEATS} requests; server_ms = ClickHouse query_duration_ms per request")
-    print(f"{'endpoint':<22}{'server_ms':>10}{'wall_ms':>10}{'rows read':>14}{'MB read':>10}")
+    print(f"\n{label}: {REPEATS} requests each; server_ms = mean ClickHouse query_duration_ms per request, "
+          "wall_ms = median end-to-end time")
+    print(f"{'endpoint':<22}{'server_ms':>10}{'wall_ms':>10}{'rows read':>14}{'MB read':>10}{'KB out':>9}")
     for name, r in sorted(results.items(), key=lambda kv: -kv[1].get("server_ms", 0)):
         print(f"{name:<22}{r.get('server_ms', 0):>10.1f}{r['wall_ms']:>10.1f}{r.get('read_rows', 0):>14,}"
-              f"{r.get('read_mb', 0):>10.1f}")
+              f"{r.get('read_mb', 0):>10.1f}{r['bytes'] / 1000:>9.0f}"
+              + (f"  ({r['items']} sessions)" if r["items"] is not None else ""))
     return results
 
 
