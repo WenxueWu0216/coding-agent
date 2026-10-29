@@ -103,8 +103,8 @@ def test_trace_records_every_step(tmp_path):
     ev.run_task(TASK, "claude-sonnet-5-5", 20, client=FakeClient(FIX), trace_path=path)
     events = [json.loads(l) for l in path.read_text().splitlines()]
     types = [e["type"] for e in events]
-    assert types == ["task_start", "model_call", "tool_call", "model_call", "tool_call", "model_call",
-                     "verify", "task_end"]
+    assert types == ["run_start", "model_call", "tool_call", "tool_result", "model_call", "tool_call",
+                     "approval_decision", "tool_result", "model_call", "verify", "run_end"]
     assert events[-1]["passed"] is True
     assert events[2]["tool"] == "read_file" and events[2]["error"] is None
 

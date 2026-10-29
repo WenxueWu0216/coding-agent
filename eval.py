@@ -94,19 +94,21 @@ def classify(passed, stats, tampered=False):
     return "wrong_fix"
 
 
-def run_task(task, model, max_steps, client=None, trace_path=None, verify=True):
+def run_task(task, model, max_steps, client=None, trace_path=None, verify=True, run_id="", trace_content=False):
     import anthropic
     from agent import Agent, auto_approve
-    from tracing import Tracer
+    from tracing import Tracer, failure_root_cause, utc_ms
 
-    tracer = Tracer(trace_path) if trace_path else None
+    tracer = Tracer(trace_path, run_id=run_id, model=model, trace_content=trace_content) if trace_path else None
+    started_at = utc_ms()
     with tempfile.TemporaryDirectory() as tmp:
         ws = Path(tmp)
         shutil.copytree(task["dir"] / "repo", ws, dirs_exist_ok=True)
         agent = Agent(workspace=ws, model=model, approver=auto_approve, max_steps=max_steps,
                       client=client, verbose=False, verify=verify)
         if tracer:
-            tracer.event("task_start", task=task["id"], prompt=task["prompt"])
+            tracer.event("run_start", task=task["id"], task_id=task["id"], suite=task["suite"],
+                         category=task["category"], prompt=task["prompt"], max_steps=max_steps, verify=verify)
         t0 = time.time()
         try:
             stats = agent.run([{"role": "user", "content": task["prompt"]}], tracer=tracer)
@@ -127,7 +129,16 @@ def run_task(task, model, max_steps, client=None, trace_path=None, verify=True):
            "tampered": tampered, "cost_usd": round(cost, 5), **stats,
            "test_log": None if passed else log}
     if tracer:
-        tracer.event("task_end", passed=passed, failure_type=row["failure_type"], cost_usd=row["cost_usd"])
+        row["session_id"] = tracer.session_id
+        row["failure_root_cause"] = failure_root_cause(tracer.events, passed, stats["stop"])
+        calls = [e for e in tracer.events if e["type"] == "model_call"]   # stats are zeroed on api errors
+        tin, tout = sum(e["input_tokens"] for e in calls), sum(e["output_tokens"] for e in calls)
+        tracer.event("run_end", parent=tracer.root_id, task_id=task["id"], suite=task["suite"], passed=passed,
+                     status="ok" if passed else "error", failure_type=row["failure_type"],
+                     failure_root_cause=row["failure_root_cause"],
+                     cost_usd=round(cost_usd(model, tin, tout), 8), input_tokens=tin, output_tokens=tout,
+                     latency_ms=stats["wall_ms"], started_at=started_at, steps=stats["steps"],
+                     tool_calls=stats["tool_calls"], edits=stats["edits"], stop=stats["stop"])
         tracer.close()
     return row
 
@@ -170,6 +181,8 @@ def main():
     ap.add_argument("--max-steps", type=int, default=20)
     ap.add_argument("--no-verify", action="store_true", help="disable the lint/test completion gate")
     ap.add_argument("--validate", action="store_true", help="check tasks against reference fixes; no API calls")
+    ap.add_argument("--trace-content", action="store_true",
+                    help="keep truncated tool args/outputs and model text in traces (default: hashes and sizes only)")
     args = ap.parse_args()
 
     try:
@@ -200,7 +213,8 @@ def main():
         for i in range(args.repeat):
             for t in tasks:
                 trace_path = run_dir / "traces" / f"{t['id']}__r{i}.jsonl"
-                r = run_task(t, args.model, args.max_steps, trace_path=trace_path, verify=not args.no_verify)
+                r = run_task(t, args.model, args.max_steps, trace_path=trace_path, verify=not args.no_verify,
+                             run_id=run_id, trace_content=args.trace_content)
                 r["run_id"], r["repeat"] = run_id, i
                 rows.append(r)
                 f.write(json.dumps(r) + "\n")
