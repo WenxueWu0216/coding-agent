@@ -7,6 +7,7 @@ from pathlib import Path
 
 import anthropic
 from safety import PolicyError, check_command, safe_path
+from tracing import null_trace
 from verify import Verifier
 
 MODEL = "claude-sonnet-5-5"
@@ -93,6 +94,9 @@ class Agent:
         self.verbose = verbose
         self.verifier = Verifier(self.root, max_verify_attempts, log=self.log) if verify else None
         self.reviewer = reviewer   # (path, old_text, new_text) -> ReviewResult; None = apply without review
+        self._trace = null_trace     # set by run(); lets tools record approval decisions
+        self._tool_event = None      # event_id of the tool_call being executed
+        self._root = self._model_event = None
 
     def log(self, msg):
         if self.verbose:
@@ -118,6 +122,11 @@ class Agent:
         note = ""
         if self.reviewer:
             result = self.reviewer(path, old_text, new_text)
+            decision = ("approved" if result.accepted == result.total else
+                        "denied" if result.accepted == 0 and result.edited == 0 else "partial")
+            self._trace("approval_decision", parent=self._tool_event, tool_name="edit_file",
+                        decision=decision, approver="diff_review", hunks_accepted=result.accepted,
+                        hunks_rejected=result.rejected, hunks_edited=result.edited)
             if result.accepted == 0 and result.edited == 0:
                 raise ToolError("denied", "the user rejected every hunk of this edit; nothing was written. "
                                           "Ask them what they want instead.")
@@ -153,8 +162,13 @@ class Agent:
             if name == "run_bash":
                 check_command(args.get("command", ""))   # don't ask the user about something policy blocks anyway
             needs_ok = name in NEEDS_APPROVAL and not reviewed_elsewhere and not is_read_only(name, args)
-            if needs_ok and not self.approver(name, args):
-                return "Error: the user denied this action. Ask them what to do instead.", "denied"
+            if needs_ok:
+                approved = self.approver(name, args)
+                self._trace("approval_decision", parent=self._tool_event, tool_name=name,
+                            decision="approved" if approved else "denied",
+                            approver=getattr(self.approver, "__name__", "unknown"))
+                if not approved:
+                    return "Error: the user denied this action. Ask them what to do instead.", "denied"
             return handlers[name](**args), None
         except PolicyError as e:
             return f"Blocked by policy: {e}", "policy_block"
@@ -178,7 +192,8 @@ class Agent:
                 model=self.model, max_tokens=4096, system=SYSTEM, tools=TOOLS, messages=messages, **extra,
             )
         except Exception as e:
-            trace("api_error", step=step, error=type(e).__name__, message=str(e)[:300])
+            trace("api_error", parent=self._root, step=step, status="error", error=type(e).__name__,
+                  message=str(e)[:300])
             raise
         ms = round((time.time() - t0) * 1000)
         u = response.usage
@@ -187,8 +202,9 @@ class Agent:
         stats["input_tokens"] += u.input_tokens
         stats["output_tokens"] += u.output_tokens
         texts = [b.text for b in response.content if b.type == "text"]
-        trace("model_call", step=step, latency_ms=ms, input_tokens=u.input_tokens,
-              output_tokens=u.output_tokens, stop_reason=response.stop_reason, text=" ".join(texts)[:500])
+        self._model_event = trace("model_call", parent=self._root, step=step, latency_ms=ms,
+                                  input_tokens=u.input_tokens, output_tokens=u.output_tokens,
+                                  stop_reason=response.stop_reason, text=" ".join(texts)[:500])
         messages.append({"role": "assistant", "content": response.content})
         for t in texts:
             self.log(f"\nClaude: {t}")
@@ -204,7 +220,8 @@ class Agent:
         ms = round((time.time() - t0) * 1000)
         stats["verify_runs"] += 1
         stats["tool_ms"] += ms
-        trace("verify", step=step, ok=not new, new_failures=new[:20], latency_ms=ms)
+        verify_event = trace("verify", parent=self._model_event, step=step, ok=not new,
+                             status="ok" if not new else "error", new_failures=new[:20], latency_ms=ms)
         if not new:
             v.strikes = 0
             stats["verified"] = True
@@ -223,7 +240,7 @@ class Agent:
 
         restored = v.rollback()
         stats["stop"] = "rolled_back"
-        trace("rollback", step=step, files=restored)
+        trace("rollback", parent=verify_event, step=step, files=restored)
         self.log(f"  [verify] rolled back {restored}")
         messages.append({"role": "user", "content": (
             f"Automatic verification failed {v.max_attempts} times in a row, so every edit you made this "
@@ -233,7 +250,10 @@ class Agent:
         return True
 
     def run(self, messages, tracer=None):
-        trace = tracer.event if tracer else (lambda *a, **k: None)
+        trace = tracer.event if tracer else null_trace
+        self._trace = trace
+        self._root = getattr(tracer, "root_id", None)
+        self._model_event = None
         stats = {"steps": 0, "tool_calls": 0, "edits": 0, "tool_errors": 0, "error_kinds": {},
                  "input_tokens": 0, "output_tokens": 0, "model_ms": 0, "tool_ms": 0,
                  "verify_runs": 0, "verify_failures": 0, "stop": "step_limit"}
@@ -255,6 +275,8 @@ class Agent:
                     continue
                 stats["tool_calls"] += 1
                 self.log(f"  [tool] {describe(block.name, block.input)}")
+                self._tool_event = trace("tool_call", parent=self._model_event, step=step, tool_name=block.name,
+                                         tool=block.name, args=block.input, error=None)
                 t0 = time.time()
                 output, err = self.run_tool(block.name, block.input)
                 ms = round((time.time() - t0) * 1000)
@@ -264,8 +286,8 @@ class Agent:
                     stats["error_kinds"][err] = stats["error_kinds"].get(err, 0) + 1
                 elif block.name == "edit_file":
                     stats["edits"] += 1
-                trace("tool_call", step=step, tool=block.name, args=block.input, latency_ms=ms,
-                      error=err, output=output[:500])
+                trace("tool_result", parent=self._tool_event, step=step, tool_name=block.name, latency_ms=ms,
+                      status="error" if err else "ok", error=err, output=output[:500])
                 self.log(f"  [result] {output[:200]}")
                 results.append({"type": "tool_result", "tool_use_id": block.id, "content": output,
                                 **({"is_error": True} if err else {})})

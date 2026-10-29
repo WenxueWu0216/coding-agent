@@ -141,6 +141,16 @@ def compare(old_dir, new_dir, threshold):
     return 0
 
 
+def content(e, key, n):
+    """Event content, or a placeholder when the trace was written without --trace-content."""
+    if key in e:
+        v = e[key]
+        return (v if isinstance(v, str) else json.dumps(v))[:n]
+    if f"{key}_hash" in e:
+        return f"[redacted: {e[f'{key}_size_bytes']} bytes, sha {e[f'{key}_hash']}]"
+    return ""
+
+
 def show_trace(run_dir, task):
     files = sorted((run_dir / "traces").glob(f"*{task}*__r*.jsonl"))
     if not files:
@@ -150,26 +160,38 @@ def show_trace(run_dir, task):
         for line in f.read_text().splitlines():
             e = json.loads(line)
             t = f"{e['t_ms'] / 1000:>6.1f}s"
-            if e["type"] == "task_start":
-                print(f"{t}  TASK   {e['prompt']}")
-            elif e["type"] == "model_call":
+            kind = e["type"]
+            if kind in ("task_start", "run_start"):
+                print(f"{t}  TASK   {content(e, 'prompt', 300)}")
+            elif kind == "model_call":
                 print(f"{t}  MODEL  step {e['step']}  {e['latency_ms']}ms  in={e['input_tokens']} "
                       f"out={e['output_tokens']}  stop={e['stop_reason']}")
-                if e["text"]:
-                    print(f"         says: {e['text'][:200]}")
-            elif e["type"] == "tool_call":
-                flag = f"  ERROR[{e['error']}]" if e["error"] else ""
-                print(f"{t}  TOOL   {e['tool']}({json.dumps(e['args'])[:150]}){flag}")
-                print(f"         -> {e['output'][:200]!r}")
-            elif e["type"] == "verify":
+                says = content(e, "text", 200)
+                if says and e.get("text_size_bytes", 1):
+                    print(f"         says: {says}")
+            elif kind == "tool_call":
+                tool = e.get("tool_name") or e.get("tool")
+                args = content(e, "args", 150) or f"[redacted: {e.get('args_size_bytes')} bytes, " \
+                                                  f"sha {e.get('tool_args_hash')}]"
+                flag = f"  ERROR[{e['error']}]" if e.get("error") else ""
+                print(f"{t}  TOOL   {tool}({args}){flag}")
+                if "output" in e:   # traces written before tool_result existed
+                    print(f"         -> {e['output'][:200]!r}")
+            elif kind == "tool_result":
+                flag = f"ERROR[{e['error']}] " if e.get("error") else ""
+                print(f"         -> {flag}{e['latency_ms']}ms  {content(e, 'output', 200)!r}")
+            elif kind == "approval_decision":
+                print(f"         approval: {e['decision']} ({e.get('approver', '?')})")
+            elif kind == "verify":
                 status = "ok" if e["ok"] else f"NEW FAILURES {e['new_failures']}"
                 print(f"{t}  VERIFY {e['latency_ms']}ms  {status}")
-            elif e["type"] == "rollback":
-                print(f"{t}  ROLLBACK {e['files']}")
-            elif e["type"] == "api_error":
-                print(f"{t}  API    {e['error']}: {e['message']}")
-            elif e["type"] == "task_end":
-                print(f"{t}  END    passed={e['passed']}  {e['failure_type']}  ${e['cost_usd']:.4f}")
+            elif kind == "rollback":
+                print(f"{t}  ROLLBACK {content(e, 'files', 200)}")
+            elif kind == "api_error":
+                print(f"{t}  API    {e['error']}: {content(e, 'message', 300)}")
+            elif kind in ("task_end", "run_end"):
+                cause = f"  root_cause={e['failure_root_cause']}" if e.get("failure_root_cause") else ""
+                print(f"{t}  END    passed={e['passed']}  {e['failure_type']}{cause}  ${e['cost_usd']:.4f}")
         print()
 
 
