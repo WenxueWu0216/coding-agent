@@ -7,7 +7,9 @@ from pathlib import Path
 
 import anthropic
 from safety import PolicyError, check_command, safe_path
+from memory import MemoryInputError
 from memory_policy import text_of
+from memory_tools import AGENT_TOOL_NAMES, anthropic_tools
 from tracing import null_trace
 from verify import Verifier
 
@@ -157,6 +159,12 @@ class Agent:
     def run_tool(self, name, args):
         """Returns (output_text, error_kind). error_kind is None on success."""
         handlers = {"read_file": self.read_file, "edit_file": self.edit_file, "run_bash": self.run_bash}
+        if self.memory:   # memory tools only touch the memory store, so they need no approval
+            box = self.memory.toolbox
+
+            def memory_tool(tool_name):
+                return lambda **a: box.call_for_agent(tool_name, a)
+            handlers.update({n: memory_tool(n) for n in AGENT_TOOL_NAMES})
         if name not in handlers:
             return f"Error: unknown tool {name}", "unknown_tool"
         try:
@@ -176,6 +184,8 @@ class Agent:
             return f"Blocked by policy: {e}", "policy_block"
         except ToolError as e:
             return f"Error: {e}", e.kind
+        except MemoryInputError as e:
+            return f"Error: {e}", "bad_args"
         except subprocess.TimeoutExpired:
             return (f"Error: command timed out after {COMMAND_TIMEOUT}s. If this was a test run, "
                     "run a narrower selection, e.g. one test file."), "timeout"
@@ -187,6 +197,9 @@ class Agent:
             return f"Error: {e}", "tool_error"
 
     # ---------- memory ----------
+    def _tools(self):
+        return TOOLS + anthropic_tools() if self.memory else TOOLS
+
     def _system(self, messages):
         """SYSTEM plus the Memory section. Memories are retrieved again before every model call, using
         the current request and the model's latest words, so what it sees tracks what it is doing."""
@@ -221,7 +234,7 @@ class Agent:
         t0 = time.time()
         try:
             response = self.client.messages.create(
-                model=self.model, max_tokens=4096, system=self._system(messages), tools=TOOLS, messages=messages,
+                model=self.model, max_tokens=4096, system=self._system(messages), tools=self._tools(), messages=messages,
                 **extra,
             )
         except Exception as e:

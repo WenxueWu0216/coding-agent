@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from memory import Memory, MemoryInputError, MemoryStore, iso
+from memory_tools import MemoryToolbox
 
 CHARS_PER_TOKEN = 4   # rough estimate; good enough for a budget, avoids a tokenizer dependency
 
@@ -127,6 +128,10 @@ class MemoryManager:
     config: MemoryConfig = field(default_factory=MemoryConfig)
     log: Any = None
     trace: Any = None   # the agent's trace function, so memory model calls show up in traces and costs
+
+    @property
+    def toolbox(self) -> MemoryToolbox:
+        return MemoryToolbox(self.store, self.project, self.session_id)
 
     @property
     def scopes(self) -> dict[str, str]:

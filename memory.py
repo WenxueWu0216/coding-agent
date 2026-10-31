@@ -128,15 +128,17 @@ class MemoryStore:
 
     # ---------- operations ----------
     def save(self, content: str, scope: str = "project", namespace: str = "", key: Optional[str] = None,
-             tags: Optional[Iterable[str]] = None, importance: int = 3,
+             tags: Optional[Iterable[str]] = None, importance: Optional[int] = None,
              expires_at: Optional[float] = None) -> Memory:
         """Save a memory. Saving with a key that already exists in the same scope replaces that memory's
-        content, so a changed fact overwrites the stale one instead of contradicting it."""
+        content, so a changed fact overwrites the stale one instead of contradicting it; tags and
+        importance are kept unless given."""
         self._check(scope, content, importance, key)
         content = scrub(content.strip())   # never persist API keys or tokens
-        tag_str = ",".join(normalize_tags(tags))
         now = self.clock()
         existing = self.get_by_key(scope, namespace, key) if key else None
+        tag_str = ",".join(normalize_tags(tags if tags is not None else (existing.tags if existing else [])))
+        importance = importance or (existing.importance if existing else 3)
         if existing:
             self.db.execute("UPDATE memories SET content = ?, tags = ?, importance = ?, expires_at = ?, "
                             "last_used_at = ? WHERE id = ?",
@@ -229,6 +231,8 @@ class MemoryStore:
         found = [m for _, _, m in scored[:limit]]
         if touch and found:
             self._touch([m.id for m in found])
+            for m in found:
+                m.use_count, m.last_used_at = m.use_count + 1, now
         return found
 
     @staticmethod
