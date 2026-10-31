@@ -9,3 +9,7 @@ evals/synthetic/
 explorer/node_modules/
 explorer/dist/
 .env
+*.db
+*.sqlite
+*.sqlite3
+.agent/
