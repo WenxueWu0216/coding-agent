@@ -136,15 +136,13 @@ class MemoryStore:
         content = scrub(content.strip())   # never persist API keys or tokens
         tag_str = ",".join(normalize_tags(tags))
         now = self.clock()
-        if key:
-            existing = self.db.execute("SELECT id FROM memories WHERE scope = ? AND namespace = ? AND key = ?",
-                                       (scope, namespace, key)).fetchone()
-            if existing:
-                self.db.execute("UPDATE memories SET content = ?, tags = ?, importance = ?, expires_at = ?, "
-                                "last_used_at = ? WHERE id = ?",
-                                (content, tag_str, importance, expires_at, now, existing["id"]))
-                self.db.commit()
-                return self.get(existing["id"])
+        existing = self.get_by_key(scope, namespace, key) if key else None
+        if existing:
+            self.db.execute("UPDATE memories SET content = ?, tags = ?, importance = ?, expires_at = ?, "
+                            "last_used_at = ? WHERE id = ?",
+                            (content, tag_str, importance, expires_at, now, existing.id))
+            self.db.commit()
+            return self.get(existing.id)
         cur = self.db.execute(
             "INSERT INTO memories (scope, namespace, key, content, tags, created_at, last_used_at, importance, "
             "expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -157,6 +155,11 @@ class MemoryStore:
         if r and touch:
             self._touch([memory_id])
             r = self.db.execute("SELECT * FROM memories WHERE id = ?", (memory_id,)).fetchone()
+        return self._row(r) if r else None
+
+    def get_by_key(self, scope: str, namespace: str, key: str) -> Optional[Memory]:
+        r = self.db.execute("SELECT * FROM memories WHERE scope = ? AND namespace = ? AND key = ?",
+                            (scope, namespace, key)).fetchone()
         return self._row(r) if r else None
 
     def update(self, memory_id: int, content: Optional[str] = None, tags: Optional[Iterable[str]] = None,

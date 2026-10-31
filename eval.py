@@ -23,7 +23,8 @@ def load_tasks(only=None, suite="all"):
             meta = json.loads((d / "task.json").read_text())
             meta.setdefault("suite", "core")
             meta.setdefault("protected", [])
-            if suite in ("all", meta["suite"]):
+            # "all" means core + hard. Memory tasks span several sessions and run only with --suite memory.
+            if suite == meta["suite"] or (suite == "all" and meta["suite"] != "memory"):
                 meta["dir"] = d
                 tasks.append(meta)
     return tasks
@@ -94,9 +95,29 @@ def classify(passed, stats, tampered=False):
     return "wrong_fix"
 
 
-def run_task(task, model, max_steps, client=None, trace_path=None, verify=True, run_id="", trace_content=False):
+def merge_stats(total, stats):
+    """Add one session's stats to a multi-session task's totals."""
+    if total is None:
+        return {**stats, "error_kinds": dict(stats["error_kinds"])}
+    for k, v in stats.items():
+        if k == "error_kinds":
+            for kind, n in v.items():
+                total[k][kind] = total[k].get(kind, 0) + n
+        elif isinstance(v, (int, float)) and not isinstance(v, bool):
+            total[k] = total.get(k, 0) + v
+        else:
+            total[k] = v   # stop, verified, ...: the last session decides
+    return total
+
+
+def run_task(task, model, max_steps, client=None, trace_path=None, verify=True, run_id="", trace_content=False,
+             memory=False, memory_config=None):
+    """Run one task. A task with "sessions" runs each prompt as a fresh conversation in the same workspace;
+    with memory=True the sessions share a memory store, so later sessions can use what earlier ones learned."""
     import anthropic
     from agent import Agent, auto_approve
+    from memory import MemoryStore
+    from memory_policy import MemoryConfig, MemoryManager
     from tracing import Tracer, failure_root_cause, utc_ms
 
     tracer = Tracer(trace_path, run_id=run_id, model=model, trace_content=trace_content) if trace_path else None
@@ -104,18 +125,30 @@ def run_task(task, model, max_steps, client=None, trace_path=None, verify=True, 
     with tempfile.TemporaryDirectory() as tmp:
         ws = Path(tmp)
         shutil.copytree(task["dir"] / "repo", ws, dirs_exist_ok=True)
-        agent = Agent(workspace=ws, model=model, approver=auto_approve, max_steps=max_steps,
-                      client=client, verbose=False, verify=verify)
+        prompts = task.get("sessions") or [task["prompt"]]
+        store = MemoryStore() if memory else None   # in-memory SQLite: shared by this task's sessions only
         if tracer:
             tracer.event("run_start", task=task["id"], task_id=task["id"], suite=task["suite"],
-                         category=task["category"], prompt=task["prompt"], max_steps=max_steps, verify=verify)
+                         category=task["category"], prompt="\n---\n".join(prompts), max_steps=max_steps,
+                         verify=verify, memory=memory, sessions=len(prompts))
         t0 = time.time()
+        stats = None
         try:
-            stats = agent.run([{"role": "user", "content": task["prompt"]}], tracer=tracer)
+            for i, prompt in enumerate(prompts):
+                agent = Agent(workspace=ws, model=model, approver=auto_approve, max_steps=max_steps,
+                              client=client, verbose=False, verify=verify)
+                if store:
+                    agent.memory = MemoryManager(store, project=task["id"], session_id=f"{task['id']}-s{i}",
+                                                 client=agent.client, model=model,
+                                                 config=memory_config or MemoryConfig())
+                    agent.memory.start_session()
+                stats = merge_stats(stats, agent.run([{"role": "user", "content": prompt}], tracer=tracer))
         except anthropic.APIError as e:
-            stats = {**EMPTY_STATS, "stop": f"api_error: {type(e).__name__}"}
+            stats = {**EMPTY_STATS, **(stats or {}), "stop": f"api_error: {type(e).__name__}"}
         except Exception as e:
-            stats = {**EMPTY_STATS, "stop": f"crash: {type(e).__name__}: {e}"}
+            stats = {**EMPTY_STATS, **(stats or {}), "stop": f"crash: {type(e).__name__}: {e}"}
+        if store:
+            store.close()
         stats["wall_ms"] = round((time.time() - t0) * 1000)
         tampered = tampered_files(task, ws)
         passed, log = run_hidden_test(task["dir"], ws)
@@ -124,7 +157,7 @@ def run_task(task, model, max_steps, client=None, trace_path=None, verify=True, 
 
     cost = cost_usd(model, stats["input_tokens"], stats["output_tokens"])
     row = {"task": task["id"], "suite": task["suite"], "category": task["category"], "model": model,
-           "verify": verify,
+           "verify": verify, "memory": memory,
            "passed": passed, "failure_type": classify(passed, stats, bool(tampered)),
            "tampered": tampered, "cost_usd": round(cost, 5), **stats,
            "test_log": None if passed else log}
@@ -177,10 +210,12 @@ def main():
     ap.add_argument("--model", default="claude-sonnet-5-5")
     ap.add_argument("--tasks", nargs="*", help="only run tasks whose id contains one of these")
     ap.add_argument("--repeat", type=int, default=1, help="runs per task (to measure variance)")
-    ap.add_argument("--suite", choices=["core", "hard", "all"], default="all")
+    ap.add_argument("--suite", choices=["core", "hard", "memory", "all"], default="all",
+                    help="all = core + hard; memory tasks only run with --suite memory")
     ap.add_argument("--max-steps", type=int, default=20)
     ap.add_argument("--no-verify", action="store_true", help="disable the lint/test completion gate")
     ap.add_argument("--validate", action="store_true", help="check tasks against reference fixes; no API calls")
+    ap.add_argument("--memory", action="store_true", help="give the agent long-term memory (see memory_policy.py)")
     ap.add_argument("--trace-content", action="store_true",
                     help="keep truncated tool args/outputs and model text in traces (default: hashes and sizes only)")
     args = ap.parse_args()
@@ -198,12 +233,14 @@ def main():
 
     from tracing import build_manifest
 
-    run_id = f"{datetime.now():%Y%m%d-%H%M%S}_{args.model}" + ("_noverify" if args.no_verify else "")
+    run_id = f"{datetime.now():%Y%m%d-%H%M%S}_{args.model}" + ("_noverify" if args.no_verify else "") \
+        + ("_memory" if args.memory else "")
     run_dir = RUNS_DIR / run_id
     run_dir.mkdir(parents=True)
     manifest = build_manifest(run_id, args.model, args.max_steps, args.repeat, tasks, PROJECT_DIR)
     manifest["config"]["suite"] = args.suite
     manifest["config"]["verify"] = not args.no_verify
+    manifest["config"]["memory"] = args.memory
     (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     if manifest["git"]["dirty"]:
         print("warning: uncommitted changes; this run is not reproducible from a commit")
@@ -214,7 +251,7 @@ def main():
             for t in tasks:
                 trace_path = run_dir / "traces" / f"{t['id']}__r{i}.jsonl"
                 r = run_task(t, args.model, args.max_steps, trace_path=trace_path, verify=not args.no_verify,
-                             run_id=run_id, trace_content=args.trace_content)
+                             run_id=run_id, trace_content=args.trace_content, memory=args.memory)
                 r["run_id"], r["repeat"] = run_id, i
                 rows.append(r)
                 f.write(json.dumps(r) + "\n")
