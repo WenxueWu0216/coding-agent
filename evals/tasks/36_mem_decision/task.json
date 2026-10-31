@@ -1,0 +1,10 @@
+{
+  "id": "36_mem_decision",
+  "suite": "memory",
+  "category": "memory",
+  "prompt": "Implement to_storage(dt) in timeutil.py so it converts a timezone-aware datetime to our agreed storage format.",
+  "sessions": [
+    "We decided in today's design review: timestamps are stored as integer milliseconds since the Unix epoch, in UTC. Just remember this; no code yet.",
+    "Implement to_storage(dt) in timeutil.py so it converts a timezone-aware datetime to our agreed storage format."
+  ]
+}

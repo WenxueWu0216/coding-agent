@@ -1,0 +1,10 @@
+{
+  "id": "33_mem_fact",
+  "suite": "memory",
+  "category": "memory",
+  "prompt": "Implement price_with_vat() in billing.py using our company's VAT rate. Round to 2 decimals.",
+  "sessions": [
+    "FYI for later: our company's VAT rate is 21%. Nothing to change right now; just acknowledge.",
+    "Implement price_with_vat() in billing.py using our company's VAT rate. Round to 2 decimals."
+  ]
+}

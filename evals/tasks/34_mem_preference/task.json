@@ -1,0 +1,10 @@
+{
+  "id": "34_mem_preference",
+  "suite": "memory",
+  "category": "memory",
+  "prompt": "Add a function dedupe(items) to listutil.py that removes duplicates while keeping the first occurrence of each item.",
+  "sessions": [
+    "A standing preference for this project: functions that take a sequence must never mutate it, and must return a tuple, not a list. Please keep that in mind for future requests; no changes needed now.",
+    "Add a function dedupe(items) to listutil.py that removes duplicates while keeping the first occurrence of each item."
+  ]
+}

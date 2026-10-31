@@ -1,0 +1,11 @@
+{
+  "id": "35_mem_stale_fact",
+  "suite": "memory",
+  "category": "memory",
+  "prompt": "Set STAGING_PORT in config.py to the staging server's current port.",
+  "sessions": [
+    "Note for later: the staging server listens on port 8080.",
+    "Update: staging has moved to port 9091. The old port 8080 is no longer used.",
+    "Set STAGING_PORT in config.py to the staging server's current port."
+  ]
+}
