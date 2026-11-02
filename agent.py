@@ -7,6 +7,9 @@ from pathlib import Path
 
 import anthropic
 from safety import PolicyError, check_command, safe_path
+from memory import MemoryInputError
+from memory_policy import text_of
+from memory_tools import AGENT_TOOL_NAMES, anthropic_tools
 from tracing import null_trace
 from verify import Verifier
 
@@ -85,7 +88,7 @@ def auto_approve(name, args):
 
 class Agent:
     def __init__(self, workspace=".", model=MODEL, approver=ask_user, max_steps=20, client=None, verbose=True,
-                 verify=True, max_verify_attempts=3, reviewer=None):
+                 verify=True, max_verify_attempts=3, reviewer=None, memory=None):
         self.root = Path(workspace).resolve()
         self.model = model
         self.approver = approver
@@ -94,6 +97,7 @@ class Agent:
         self.verbose = verbose
         self.verifier = Verifier(self.root, max_verify_attempts, log=self.log) if verify else None
         self.reviewer = reviewer   # (path, old_text, new_text) -> ReviewResult; None = apply without review
+        self.memory = memory       # MemoryManager, or None for no memory
         self._trace = null_trace     # set by run(); lets tools record approval decisions
         self._tool_event = None      # event_id of the tool_call being executed
         self._root = self._model_event = None
@@ -155,6 +159,12 @@ class Agent:
     def run_tool(self, name, args):
         """Returns (output_text, error_kind). error_kind is None on success."""
         handlers = {"read_file": self.read_file, "edit_file": self.edit_file, "run_bash": self.run_bash}
+        if self.memory:   # memory tools only touch the memory store, so they need no approval
+            box = self.memory.toolbox
+
+            def memory_tool(tool_name):
+                return lambda **a: box.call_for_agent(tool_name, a)
+            handlers.update({n: memory_tool(n) for n in AGENT_TOOL_NAMES})
         if name not in handlers:
             return f"Error: unknown tool {name}", "unknown_tool"
         try:
@@ -174,6 +184,8 @@ class Agent:
             return f"Blocked by policy: {e}", "policy_block"
         except ToolError as e:
             return f"Error: {e}", e.kind
+        except MemoryInputError as e:
+            return f"Error: {e}", "bad_args"
         except subprocess.TimeoutExpired:
             return (f"Error: command timed out after {COMMAND_TIMEOUT}s. If this was a test run, "
                     "run a narrower selection, e.g. one test file."), "timeout"
@@ -184,12 +196,46 @@ class Agent:
         except Exception as e:
             return f"Error: {e}", "tool_error"
 
+    # ---------- memory ----------
+    def _tools(self):
+        return TOOLS + anthropic_tools() if self.memory else TOOLS
+
+    def _system(self, messages):
+        """SYSTEM plus the Memory section. Memories are retrieved again before every model call, using
+        the current request and the model's latest words, so what it sees tracks what it is doing."""
+        if not self.memory:
+            return SYSTEM
+        request = next((m["content"] for m in reversed(messages)
+                        if m["role"] == "user" and isinstance(m["content"], str)), "")
+        latest = next((text_of(m["content"]) for m in reversed(messages) if m["role"] == "assistant"), "")
+        block, _ = self.memory.context(f"{request}\n{latest}")
+        return f"{SYSTEM}\n\n{block}" if block else SYSTEM
+
+    def _memory_before(self, messages, stats, trace):
+        summary = self.memory.compact(messages, stats)
+        if summary:
+            trace("memory_summary", parent=self._root, memory_id=summary.id)
+        request = messages[-1]["content"] if isinstance(messages[-1]["content"], str) else ""
+        found = self.memory.retrieve(request, touch=True)   # counts as a use, unlike per-call lookups
+        trace("memory_retrieval", parent=self._root, memory_ids=[m.id for m in found])
+
+    def _memory_after(self, messages, stats, trace, start):
+        try:
+            saved = self.memory.propose(messages[start:], stats)
+        except Exception as e:   # a failed proposal call must not fail a run that already finished
+            self.log(f"  [memory] could not propose memories: {type(e).__name__}: {e}")
+            stats["memory_error"] = type(e).__name__
+            return
+        trace("memory_save", parent=self._root, memory_ids=[m.id for _, m in saved],
+              actions=[a for a, _ in saved])
+
     # ---------- loop ----------
     def _call(self, messages, stats, trace, step, **extra):
         t0 = time.time()
         try:
             response = self.client.messages.create(
-                model=self.model, max_tokens=4096, system=SYSTEM, tools=TOOLS, messages=messages, **extra,
+                model=self.model, max_tokens=4096, system=self._system(messages), tools=self._tools(), messages=messages,
+                **extra,
             )
         except Exception as e:
             trace("api_error", parent=self._root, step=step, status="error", error=type(e).__name__,
@@ -260,6 +306,17 @@ class Agent:
         stats["verified"] = False
         if self.verifier:
             self.verifier.reset()
+        if not self.memory:
+            return self._loop(messages, stats, trace)
+        stats["memory_tokens"] = 0
+        self.memory.trace = trace
+        self._memory_before(messages, stats, trace)
+        start = len(messages) - 1
+        self._loop(messages, stats, trace)
+        self._memory_after(messages, stats, trace, start)
+        return stats
+
+    def _loop(self, messages, stats, trace):
         for step in range(1, self.max_steps + 1):
             response = self._call(messages, stats, trace, step)
             if response.stop_reason != "tool_use":

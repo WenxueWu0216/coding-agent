@@ -1,0 +1,10 @@
+{
+  "id": "37_mem_retry_limit",
+  "suite": "memory",
+  "category": "memory",
+  "prompt": "Card charges fail too often. In payments.py, make charge_with_retries use the retry limit the payments team agreed on.",
+  "sessions": [
+    "Some context about our services: the payments team agreed on a retry limit of 7 attempts for card charges. Separately, the email service uses a 30-second timeout. No changes needed now.",
+    "Card charges fail too often. In payments.py, make charge_with_retries use the retry limit the payments team agreed on."
+  ]
+}

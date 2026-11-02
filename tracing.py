@@ -15,7 +15,7 @@ from pricing import cost_usd as price
 # Event types written by the tracer. task_start/task_end/api_error are the names used
 # before the analytics schema; report.py and loader.py still read them in old traces.
 EVENT_TYPES = {"run_start", "model_call", "tool_call", "tool_result", "approval_decision",
-               "verify", "rollback", "run_end", "api_error"}
+               "verify", "rollback", "run_end", "api_error", "memory_retrieval", "memory_summary", "memory_save"}
 LEGACY_TYPES = {"task_start": "run_start", "task_end": "run_end"}
 
 # Fields every event carries, with the value used when an event has nothing to say.
@@ -33,6 +33,9 @@ SECRET_PATTERNS = [
     re.compile(r"sk-ant-[A-Za-z0-9_\-]{8,}"),
     re.compile(r"AKIA[0-9A-Z]{16}"),
     re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"),
+    re.compile(r"\bsk-[A-Za-z0-9_\-]{20,}"),
+    re.compile(r"xox[abprs]-[A-Za-z0-9\-]{10,}"),
+    re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._\-]{16,}"),
     re.compile(r"(?i)\b(password|passwd|secret|api[_-]?key|token)\b(\s*[=:]\s*)\S+"),
 ]
 
