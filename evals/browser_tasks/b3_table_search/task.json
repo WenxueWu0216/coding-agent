@@ -1,0 +1,32 @@
+{
+  "id": "b3_table_search",
+  "app": "table",
+  "category": "unchanged",
+  "description": "Search the people table and open one person's details.",
+  "user_steps": [
+    [
+      "type",
+      "#q",
+      "hopper"
+    ],
+    [
+      "click",
+      "#people tbody tr:nth-child(3) button"
+    ]
+  ],
+  "change": null,
+  "expect": [
+    {
+      "selector": "#count",
+      "equals": "1 of 12 people"
+    },
+    {
+      "selector": "#detail h2",
+      "equals": "Grace Hopper"
+    },
+    {
+      "selector": "#detail p",
+      "equals": "Lives in Arlington. Known for: COBOL and compilers."
+    }
+  ]
+}

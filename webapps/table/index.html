@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>People directory</title><link rel="stylesheet" href="../style.css"></head>
+<body>
+<h1>People directory</h1>
+<label for="q">Search people</label>
+<input id="q" type="search" placeholder="Name or city">
+<table id="people">
+  <thead><tr><th>Name</th><th>City</th><th>Known for</th><th></th></tr></thead>
+  <tbody></tbody>
+</table>
+<p id="count"></p>
+<section id="detail" role="region" aria-label="Details" hidden></section>
+<script>
+const PEOPLE = [
+  ['Ada Lovelace', 'London', 'First published algorithm'], ['Alan Turing', 'Manchester', 'Computability'],
+  ['Grace Hopper', 'Arlington', 'COBOL and compilers'], ['Marie Curie', 'Paris', 'Radioactivity'],
+  ['Katherine Johnson', 'Hampton', 'Orbital mechanics'], ['Edsger Dijkstra', 'Austin', 'Shortest paths'],
+  ['Barbara Liskov', 'Boston', 'Substitution principle'], ['Donald Knuth', 'Stanford', 'TAOCP'],
+  ['Margaret Hamilton', 'Boston', 'Apollo flight software'], ['Tim Berners-Lee', 'Geneva', 'World Wide Web'],
+  ['Radia Perlman', 'Seattle', 'Spanning tree protocol'], ['John McCarthy', 'Stanford', 'Lisp'],
+];
+const body = document.querySelector('#people tbody');
+for (const [name, city, known] of PEOPLE) {
+  const tr = document.createElement('tr');
+  tr.innerHTML = `<td>${name}</td><td>${city}</td><td>${known}</td><td><button aria-label="View ${name}">View</button></td>`;
+  tr.querySelector('button').addEventListener('click', () => {
+    const d = document.getElementById('detail');
+    d.hidden = false;
+    d.innerHTML = `<h2>${name}</h2><p>Lives in ${city}. Known for: ${known}.</p>`;
+  });
+  body.appendChild(tr);
+}
+function filter() {
+  const q = document.getElementById('q').value.trim().toLowerCase();
+  let n = 0;
+  for (const tr of body.rows) { const hit = tr.innerText.toLowerCase().includes(q); tr.hidden = !hit; n += hit; }
+  document.getElementById('count').textContent = `${n} of ${PEOPLE.length} people`;
+}
+document.getElementById('q').addEventListener('input', filter);
+filter();
+</script>
+</body></html>

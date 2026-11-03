@@ -1,0 +1,46 @@
+{
+  "id": "b5_form_renamed_button",
+  "app": "form",
+  "category": "changed",
+  "description": "Contact form; before replay the submit button is renamed and its id changes.",
+  "user_steps": [
+    [
+      "fill",
+      "#name",
+      "Ada Lovelace"
+    ],
+    [
+      "fill",
+      "#email",
+      "ada@example.com"
+    ],
+    [
+      "select",
+      "#topic",
+      "Support"
+    ],
+    [
+      "check",
+      "#subscribe"
+    ],
+    [
+      "fill",
+      "#message",
+      "Hello"
+    ],
+    [
+      "click",
+      "#submit-btn"
+    ]
+  ],
+  "change": {
+    "variant": "renamed",
+    "what": "Submit button renamed to 'Send message'; id submit-btn -> send; wrapper div gets a class"
+  },
+  "expect": [
+    {
+      "selector": "#result",
+      "equals": "Thanks, Ada Lovelace! We will reply to ada@example.com about Support: \"Hello\". You are subscribed."
+    }
+  ]
+}
