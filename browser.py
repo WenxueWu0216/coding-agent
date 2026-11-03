@@ -229,7 +229,7 @@ class BrowserSession:
             url=self.page.url if self.page else None, screenshot_path=str(shot) if shot else None,
             resolved_by=info["resolved_by"], attempts=info["attempts"] or None,
             element={k: v for k, v in (info["element"] or {}).items() if v not in (None, False)} or None,
-            repaired=info["repair"] is not None, repair_event_id=(info["repair"] or {}).get("event_id"),
+            repaired=info["resolved_by"] == "model", repair_event_id=(info["repair"] or {}).get("event_id"),
             blocked_requests=self.blocked[blocked_before:] or None,
             nearby=scrub(error.details.get("nearby")) if isinstance(error, BrowserError) and error.details else None,
         )
