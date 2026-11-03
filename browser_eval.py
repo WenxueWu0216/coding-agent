@@ -111,7 +111,7 @@ def run_browser_suite(tasks, modes, model, client, run_dir, run_id, repeat=1, tr
                     repaired = r.pop("repaired_workflow")
                     if repaired:
                         wf.save(repaired, run_dir / "workflows" / f"{t['id']}__{mode}__r{i}.repaired.json")
-                    row = {"task": f"{t['id']}[{mode}]", "task_id": t["id"], "suite": "browser",
+                    row = {"task": f"{t['id']}__{mode}", "task_id": t["id"], "suite": "browser",
                            "category": t["category"], "mode": mode, "model": model if mode == "repair" else None,
                            "repeat": i, "run_id": run_id, "passed": r["passed"], "failure_type": r["failure_type"],
                            "failure_root_cause": r["failure_root_cause"], "stop": r["stop"],

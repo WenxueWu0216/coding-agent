@@ -43,6 +43,9 @@ def test_suite_scores_each_mode(tmp_path, monkeypatch, capsys):
     report.summary(run_dir)
     out = capsys.readouterr().out
     assert "15/18 passed" in out and "selector_not_found" in out
+    assert "--trace b5_form_renamed_button__fallback" in out or "--trace b5_form_renamed_button__selector" in out
+    report.show_trace(run_dir, "b5_form_renamed_button__selector")
+    assert "BROWSER step 6 click button 'Submit' -> ERROR[selector_not_found]" in capsys.readouterr().out
 
 
 def test_a_broken_task_definition_is_caught_at_record_time(tmp_path):
