@@ -1,0 +1,4 @@
+{
+  "_comment": "Hosts the browser tools may load. 'host' = any port, '*.domain' = subdomains, 'host:port' = that port only. Internal addresses (localhost, 10.x, 192.168.x, 169.254.x, ...) are blocked unless listed exactly as host:port. See browser_safety.py.",
+  "allow": []
+}

@@ -27,7 +27,7 @@ ENVELOPE: dict[str, Any] = {
 
 # Fields that may hold file contents, prompts or model text. In the default (redacted)
 # mode they are replaced by <field>_hash and <field>_size_bytes.
-CONTENT_FIELDS = ("args", "output", "text", "prompt", "message", "files")
+CONTENT_FIELDS = ("args", "output", "text", "prompt", "message", "files", "value")
 
 SECRET_PATTERNS = [
     re.compile(r"sk-ant-[A-Za-z0-9_\-]{8,}"),
