@@ -214,6 +214,21 @@ class Replayer:
         return result
 
     # ---------- model repair ----------
+    def _ask(self, prompt):
+        """Force the choose_element call. Some models refuse a forced tool_choice (400); then ask with
+        tool_choice auto and an explicit instruction, and remember that for later repairs."""
+        kw = dict(model=self.model, max_tokens=400, system=REPAIR_SYSTEM, tools=[CHOOSE_TOOL],
+                  messages=[{"role": "user", "content": prompt}])
+        if not getattr(self, "_auto_tool_choice", False):
+            try:
+                return self.client.messages.create(tool_choice={"type": "tool", "name": "choose_element"}, **kw)
+            except Exception as e:
+                if "tool_choice" not in str(e):
+                    raise
+                self._auto_tool_choice = True
+        return self.client.messages.create(tool_choice={"type": "auto"}, **{
+            **kw, "system": REPAIR_SYSTEM + " Always answer by calling choose_element exactly once."})
+
     def _repair(self, session, action, target, value, attempts, step_no):
         view = session.read_page(max_chars=8000)
         steps = self.workflow["steps"]
@@ -229,9 +244,12 @@ class Replayer:
         prompt = ("Recorded step that failed:\n" + json.dumps(context, indent=1) +
                   "\n\nCurrent page:\n" + view + "\n\nCall choose_element.")
         t0 = time.time()
-        response = self.client.messages.create(
-            model=self.model, max_tokens=400, system=REPAIR_SYSTEM, tools=[CHOOSE_TOOL],
-            tool_choice={"type": "tool", "name": "choose_element"}, messages=[{"role": "user", "content": prompt}])
+        try:
+            response = self._ask(prompt)
+        except Exception as e:   # an API failure stops this step, traced, instead of crashing the replay
+            session.trace("api_error", parent=session.parent, step=step_no, status="error", error=type(e).__name__,
+                          message=str(e)[:300], purpose="browser_repair")
+            raise BrowserError("repair_error", f"repair model call failed: {type(e).__name__}: {str(e)[:200]}") from None
         ms = round((time.time() - t0) * 1000)
         u = response.usage
         self.usage["input_tokens"] += u.input_tokens

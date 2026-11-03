@@ -260,3 +260,30 @@ def test_table_search_workflow(server):
             assert wf.Replayer(s, mode).run(flow)["ok"]
             assert s.page.inner_text("#count") == "1 of 12 people"
             assert s.page.inner_text("#detail h2") == "Grace Hopper"
+
+
+class RefusesForcedToolChoice(ScriptedRepair):
+    def create(self, **kw):
+        if kw["tool_choice"]["type"] == "tool":
+            raise RuntimeError("Error code: 400 - tool_choice: type \"tool\" and \"any\" are not supported for this model.")
+        return super().create(**kw)
+
+
+def test_repair_falls_back_to_auto_tool_choice(server, form_flow, tmp_path):
+    server.set_variant("form", "renamed")
+    client = RefusesForcedToolChoice("Send message", confidence=0.9)
+    r, page, _ = repair_run(server, form_flow, client, tmp_path)
+    assert r["ok"] and page["result"] == FORM_DONE
+    assert client.prompts[-1]["tool_choice"] == {"type": "auto"}
+
+
+class Broken(ScriptedRepair):
+    def create(self, **kw):
+        raise ConnectionError("network down")
+
+
+def test_repair_api_failure_stops_the_replay_cleanly(server, form_flow, tmp_path):
+    server.set_variant("form", "renamed")
+    r, page, events = repair_run(server, form_flow, Broken("x"), tmp_path)
+    assert not r["ok"] and r["error"] == "repair_error" and r["failed_step"] == 6
+    assert any(e["type"] == "api_error" and e["purpose"] == "browser_repair" for e in events)
