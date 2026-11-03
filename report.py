@@ -4,6 +4,7 @@
   python report.py RUN_ID                 summary of one run
   python report.py OLD_RUN NEW_RUN        regression report between two runs
   python report.py RUN_ID --trace TASK    step-by-step trace of one task
+  python report.py --trace-file PATH      step-by-step view of any trace file (e.g. a browser replay)
 """
 import argparse
 import json
@@ -156,52 +157,118 @@ def show_trace(run_dir, task):
     if not files:
         sys.exit(f"no trace for {task}")
     for f in files:
-        print(f"===== {f.name}")
-        for line in f.read_text().splitlines():
-            e = json.loads(line)
-            t = f"{e['t_ms'] / 1000:>6.1f}s"
-            kind = e["type"]
-            if kind in ("task_start", "run_start"):
-                print(f"{t}  TASK   {content(e, 'prompt', 300)}")
-            elif kind == "model_call":
-                print(f"{t}  MODEL  step {e['step']}  {e['latency_ms']}ms  in={e['input_tokens']} "
-                      f"out={e['output_tokens']}  stop={e['stop_reason']}")
-                says = content(e, "text", 200)
-                if says and e.get("text_size_bytes", 1):
-                    print(f"         says: {says}")
-            elif kind == "tool_call":
-                tool = e.get("tool_name") or e.get("tool")
-                args = content(e, "args", 150) or f"[redacted: {e.get('args_size_bytes')} bytes, " \
-                                                  f"sha {e.get('tool_args_hash')}]"
-                flag = f"  ERROR[{e['error']}]" if e.get("error") else ""
-                print(f"{t}  TOOL   {tool}({args}){flag}")
-                if "output" in e:   # traces written before tool_result existed
-                    print(f"         -> {e['output'][:200]!r}")
-            elif kind == "tool_result":
-                flag = f"ERROR[{e['error']}] " if e.get("error") else ""
-                print(f"         -> {flag}{e['latency_ms']}ms  {content(e, 'output', 200)!r}")
-            elif kind == "approval_decision":
-                print(f"         approval: {e['decision']} ({e.get('approver', '?')})")
-            elif kind == "verify":
-                status = "ok" if e["ok"] else f"NEW FAILURES {e['new_failures']}"
-                print(f"{t}  VERIFY {e['latency_ms']}ms  {status}")
-            elif kind == "rollback":
-                print(f"{t}  ROLLBACK {content(e, 'files', 200)}")
-            elif kind == "api_error":
-                print(f"{t}  API    {e['error']}: {content(e, 'message', 300)}")
-            elif kind in ("task_end", "run_end"):
-                cause = f"  root_cause={e['failure_root_cause']}" if e.get("failure_root_cause") else ""
-                print(f"{t}  END    passed={e['passed']}  {e['failure_type']}{cause}  ${e['cost_usd']:.4f}")
-        print()
+        show_trace_file(f)
+
+
+def show_trace_file(path):
+    print(f"===== {Path(path).name}")
+    for line in Path(path).read_text().splitlines():
+        print_event(json.loads(line))
+    print()
+
+
+def fmt_target(t):
+    if not t:
+        return ""
+    if t.get("ref"):
+        return f"ref {t['ref']}"
+    if t.get("role") and t.get("name"):
+        return f"{t['role']} {t['name']!r}"
+    return next((f"{k} {t[k]!r}" for k in ("label", "text", "placeholder", "selector", "name") if t.get(k)), str(t))
+
+
+def print_browser_step(e, t):
+    action = e.get("action", "?")
+    what = fmt_target(e.get("target")) or (content(e, "value", 120) if action == "open" else "")
+    if e.get("status") == "error":
+        outcome = f"ERROR[{e.get('error')}]"
+    else:
+        outcome = f"ok via {e['resolved_by']}" if e.get("resolved_by") else "ok"
+    flags = "  REPAIRED" if e.get("repaired") else ""
+    print(f"{t}  BROWSER step {e.get('step', '?')} {action} {what} -> {outcome} {e.get('latency_ms', 0)}ms{flags}")
+    if e.get("attempts"):
+        tried = "; ".join(f"{a['strategy']} {a.get('query')!r} -> {a.get('result')}"
+                          + (f" ({a['matches']})" if a.get("matches") is not None else "")
+                          + (f" found {a['found']}" if a.get("found") else "") for a in e["attempts"])
+        print(f"         tried: {tried}")
+    if e.get("element") and e.get("status") != "error":
+        el = e["element"]
+        print(f"         acted on: {el.get('role') or el.get('tag')} {el.get('name')!r} ({el.get('selector')})")
+    if e.get("status") == "error":
+        print(f"         url: {e.get('url')}")
+        if e.get("error_detail"):
+            print(f"         detail: {e['error_detail']}")
+        if e.get("nearby"):
+            print(f"         on page: {', '.join(e['nearby'][:8])}")
+    for b in e.get("blocked_requests") or []:
+        print(f"         blocked: {b['url']} ({b['reason']})")
+    if e.get("screenshot_path"):
+        print(f"         screenshot: {e['screenshot_path']}")
+
+
+def print_event(e):
+    t = f"{e['t_ms'] / 1000:>6.1f}s"
+    kind = e["type"]
+    if kind in ("task_start", "run_start"):
+        print(f"{t}  TASK   {content(e, 'prompt', 300)}")
+    elif kind == "model_call":
+        print(f"{t}  MODEL  step {e['step']}  {e['latency_ms']}ms  in={e['input_tokens']} "
+              f"out={e['output_tokens']}  stop={e['stop_reason']}")
+        says = content(e, "text", 200)
+        if says and e.get("text_size_bytes", 1):
+            print(f"         says: {says}")
+    elif kind == "tool_call":
+        tool = e.get("tool_name") or e.get("tool")
+        args = content(e, "args", 150) or f"[redacted: {e.get('args_size_bytes')} bytes, " \
+                                          f"sha {e.get('tool_args_hash')}]"
+        flag = f"  ERROR[{e['error']}]" if e.get("error") else ""
+        print(f"{t}  TOOL   {tool}({args}){flag}")
+        if "output" in e:   # traces written before tool_result existed
+            print(f"         -> {e['output'][:200]!r}")
+    elif kind == "tool_result":
+        flag = f"ERROR[{e['error']}] " if e.get("error") else ""
+        print(f"         -> {flag}{e['latency_ms']}ms  {content(e, 'output', 200)!r}")
+    elif kind == "approval_decision":
+        print(f"         approval: {e['decision']} ({e.get('approver', '?')})")
+    elif kind == "verify":
+        status = "ok" if e["ok"] else f"NEW FAILURES {e['new_failures']}"
+        print(f"{t}  VERIFY {e['latency_ms']}ms  {status}")
+    elif kind == "rollback":
+        print(f"{t}  ROLLBACK {content(e, 'files', 200)}")
+    elif kind == "api_error":
+        print(f"{t}  API    {e['error']}: {content(e, 'message', 300)}")
+    elif kind in ("task_end", "run_end"):
+        cause = f"  root_cause={e['failure_root_cause']}" if e.get("failure_root_cause") else ""
+        print(f"{t}  END    passed={e['passed']}  {e['failure_type']}{cause}  ${e['cost_usd']:.4f}")
+    elif kind == "browser_step":
+        print_browser_step(e, t)
+    elif kind == "browser_repair":
+        chosen = fmt_target(e.get("chosen_element")) or "nothing"
+        print(f"{t}  REPAIR step {e.get('step')} {e.get('action')} {fmt_target(e.get('original_target'))} -> {chosen}: "
+              f"{e.get('decision')}{' (destructive)' if e.get('destructive') else ''}  confidence "
+              f"{e.get('confidence', 0):.2f} / threshold {e.get('threshold')}  in={e.get('input_tokens')} "
+              f"out={e.get('output_tokens')}")
+        if e.get("reason"):
+            print(f"         model: {e['reason']}")
+        if e.get("problem"):
+            print(f"         problem: {e['problem']}")
+        if e.get("approver"):
+            print(f"         approver: {e['approver']}")
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("runs", nargs="+", help="run id(s), or 'latest'")
+    ap.add_argument("runs", nargs="*", help="run id(s), or 'latest'")
     ap.add_argument("--trace", help="print the trace of one task")
+    ap.add_argument("--trace-file", help="print one trace file, e.g. from browser_cli.py replay")
     ap.add_argument("--threshold", type=float, default=0.0, help="fail (exit 1) if new pass rate is below this")
     args = ap.parse_args()
 
+    if args.trace_file:
+        show_trace_file(args.trace_file)
+        return
+    if not args.runs:
+        ap.error("give a run id, 'latest', or --trace-file")
     dirs = [resolve(r) for r in args.runs]
     if args.trace:
         show_trace(dirs[0], args.trace)

@@ -309,3 +309,48 @@ class Replayer:
 
 def describe_step(step: dict) -> str:
     return f"{step['action']} {describe_target(step.get('target'))}"
+
+
+def traced_replay(flow: dict, policy, mode: str, trace_path, run_id: str = "", client=None, model: str = REPAIR_MODEL,
+                  check: Optional[Callable] = None, screenshot_dir=None, trace_content: bool = False,
+                  start_url: Optional[str] = None, task_id: Optional[str] = None, suite: str = "browser",
+                  category: str = "", headless: bool = True, wait_ms: int = 2000, credential_approver=None,
+                  **replayer_kw) -> dict:
+    """Replay `flow` in a fresh browser and write one complete trace: run_start, a browser_step per
+    action (screenshot each), browser_repair + model_call per repair, run_end with pass/fail and root
+    cause. `check(page) -> (passed, detail)` decides success after the last step."""
+    from browser import deny_credentials
+    from tracing import Tracer, browser_root_cause, utc_ms
+
+    tracer = Tracer(trace_path, run_id=run_id, model=model, trace_content=trace_content)
+    task_id = task_id or flow.get("name", "workflow")
+    started = utc_ms()
+    root = tracer.event("run_start", task_id=task_id, suite=suite, category=category, mode=mode,
+                        workflow=flow.get("name"), steps=len(flow["steps"]))
+    session = BrowserSession(policy, trace=tracer.event, screenshot_dir=screenshot_dir or Path(trace_path).with_suffix(""),
+                             screenshot_every_step=True, headless=headless, wait_ms=wait_ms,
+                             credential_approver=credential_approver or deny_credentials)
+    session.parent = root
+    try:
+        replayer = Replayer(session, mode, client=client, model=model, **replayer_kw)
+        result = replayer.run(flow, start_url=start_url)
+        passed, detail = result["ok"], None
+        if result["ok"] and check:
+            passed, detail = check(session.page)
+        result["check_detail"] = detail
+    finally:
+        session.close()
+    result["passed"] = bool(passed)
+    result["failure_root_cause"] = browser_root_cause(tracer.events, result["passed"])
+    result["failure_type"] = "pass" if passed else ("wrong_result" if result["ok"] else result["error"])
+    result["repaired_workflow"] = replayer.workflow if replayer.repairs else None
+    result["session_id"] = tracer.session_id
+    tracer.event("run_end", parent=root, task_id=task_id, suite=suite, passed=result["passed"],
+                 status="ok" if passed else "error", failure_type=result["failure_type"],
+                 failure_root_cause=result["failure_root_cause"], input_tokens=result["input_tokens"],
+                 output_tokens=result["output_tokens"], cost_usd=result["cost_usd"], latency_ms=result["wall_ms"],
+                 started_at=started, steps=result["steps_total"], steps_ok=result["steps_ok"],
+                 repairs=result["repairs"], stop=result["stop"], check_detail=detail, tool_calls=result["steps_ok"],
+                 edits=0)
+    tracer.close()
+    return result

@@ -21,7 +21,6 @@ from pathlib import Path
 
 from browser import BrowserSession, ask_credentials
 from browser_safety import DEFAULT_CONFIG, BrowserPolicy
-from tracing import Tracer
 import workflow as wf_mod
 
 TRACE_DIR = Path(__file__).resolve().parent / "traces" / "browser"
@@ -57,36 +56,23 @@ def replay(args):
             sys.exit(f"--value {spec!r}: expected STEP=ENV_VAR with ENV_VAR set")
         values[int(n)] = os.environ[var]
     trace_path = Path(args.trace) if args.trace else TRACE_DIR / f"{Path(args.workflow).stem}-{uuid.uuid4().hex[:8]}.jsonl"
-    tracer = Tracer(trace_path, run_id=f"replay-{uuid.uuid4().hex[:8]}", model=args.model,
-                    trace_content=args.trace_content)
-    root = tracer.event("run_start", task_id=flow["name"], suite="browser", mode=args.mode,
-                        steps=len(flow["steps"]))
-    session = BrowserSession(BrowserPolicy.load(args.allowlist), credential_approver=ask_credentials,
-                             trace=tracer.event, screenshot_dir=args.screenshots or trace_path.with_suffix(""),
-                             screenshot_every_step=True, headless=not args.headed)
-    session.parent = root
     client = None
     if args.mode == "repair":
         from llm_client import make_client
         client = make_client()
-    try:
-        replayer = wf_mod.Replayer(session, args.mode, client=client, model=args.model,
-                                   repair_approver=wf_mod.ask_repair, values=values)
-        result = replayer.run(flow, start_url=args.start_url)
-    finally:
-        session.close()
-    tracer.event("run_end", parent=root, task_id=flow["name"], suite="browser", passed=result["ok"],
-                 status="ok" if result["ok"] else "error", failure_type="pass" if result["ok"] else result["error"],
-                 failure_root_cause="none" if result["ok"] else result["error"], input_tokens=result["input_tokens"],
-                 output_tokens=result["output_tokens"], cost_usd=result["cost_usd"], latency_ms=result["wall_ms"],
-                 steps=result["steps_total"], stop=result["stop"])
-    tracer.close()
-    if args.save_repaired and replayer.repairs:
-        wf_mod.save(replayer.workflow, args.save_repaired)
+    result = wf_mod.traced_replay(flow, BrowserPolicy.load(args.allowlist), args.mode, trace_path,
+                                  run_id=f"replay-{uuid.uuid4().hex[:8]}", client=client, model=args.model,
+                                  screenshot_dir=args.screenshots, trace_content=args.trace_content,
+                                  start_url=args.start_url, headless=not args.headed,
+                                  credential_approver=ask_credentials, repair_approver=wf_mod.ask_repair,
+                                  values=values)
+    repaired = result.pop("repaired_workflow")
+    if args.save_repaired and repaired:
+        wf_mod.save(repaired, args.save_repaired)
         print(f"repaired workflow saved to {args.save_repaired}")
     print(json.dumps(result, indent=1))
-    print(f"trace: {trace_path}\nnext: python report.py --browser-trace {trace_path}")
-    sys.exit(0 if result["ok"] else 1)
+    print(f"trace: {trace_path}\nnext: python report.py --trace-file {trace_path}")
+    sys.exit(0 if result["passed"] else 1)
 
 
 def main():
