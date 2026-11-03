@@ -34,7 +34,9 @@ TOOLS = [
     },
     {
         "name": "browser_click",
-        "description": "Click one element. Identify it by ref (preferred) or by role+name, label, text or selector.",
+        "description": ("Click one element. Identify it by ref (preferred) or by role+name, label, text or selector. "
+                        "Clicking something that looks destructive (delete, pay, transfer, ...) needs a human's "
+                        "approval; if it is refused, stop and ask the user."),
         "input_schema": obj(TARGET_ARGS),
         "output_schema": RESULT,
     },

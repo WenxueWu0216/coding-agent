@@ -1,0 +1,47 @@
+{
+  "id": "b2_wizard_signup",
+  "app": "wizard",
+  "category": "unchanged",
+  "description": "Complete the three-step sign-up wizard.",
+  "user_steps": [
+    [
+      "fill",
+      "#username",
+      "ada"
+    ],
+    [
+      "select",
+      "#plan",
+      "Pro"
+    ],
+    [
+      "click",
+      "#step1 .next"
+    ],
+    [
+      "fill",
+      "#city",
+      "London"
+    ],
+    [
+      "select",
+      "#country",
+      "France"
+    ],
+    [
+      "click",
+      "#step2 .next"
+    ],
+    [
+      "click",
+      "#step3 .finish"
+    ]
+  ],
+  "change": null,
+  "expect": [
+    {
+      "selector": "#summary",
+      "equals": "Account created: ada, Pro plan, London, France"
+    }
+  ]
+}

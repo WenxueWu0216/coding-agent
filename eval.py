@@ -120,6 +120,9 @@ def run_task(task, model, max_steps, client=None, trace_path=None, verify=True, 
     from memory_policy import MemoryConfig, MemoryManager
     from tracing import Tracer, failure_root_cause, utc_ms
 
+    if client is None:   # reads EVAL_ANTHROPIC_API_KEY when set; see llm_client.py
+        from llm_client import make_client
+        client = make_client()
     tracer = Tracer(trace_path, run_id=run_id, model=model, trace_content=trace_content) if trace_path else None
     started_at = utc_ms()
     with tempfile.TemporaryDirectory() as tmp:
@@ -210,8 +213,12 @@ def main():
     ap.add_argument("--model", default="claude-sonnet-5-5")
     ap.add_argument("--tasks", nargs="*", help="only run tasks whose id contains one of these")
     ap.add_argument("--repeat", type=int, default=1, help="runs per task (to measure variance)")
-    ap.add_argument("--suite", choices=["core", "hard", "memory", "all"], default="all",
-                    help="all = core + hard; memory tasks only run with --suite memory")
+    ap.add_argument("--suite", choices=["core", "hard", "memory", "all", "browser"], default="all",
+                    help="all = core + hard; memory tasks only run with --suite memory; browser = browser_eval.py")
+    ap.add_argument("--modes", nargs="*", choices=["selector", "fallback", "repair"],
+                    help="browser suite: replay modes to score (default: all three)")
+    ap.add_argument("--injection", action="store_true",
+                    help="browser suite: also run the prompt-injection checks with the real model")
     ap.add_argument("--max-steps", type=int, default=20)
     ap.add_argument("--no-verify", action="store_true", help="disable the lint/test completion gate")
     ap.add_argument("--validate", action="store_true", help="check tasks against reference fixes; no API calls")
@@ -224,6 +231,10 @@ def main():
         import pytest  # noqa: F401
     except ImportError:
         sys.exit(f"pytest is not installed for {sys.executable}\nRun: {sys.executable} -m pip install pytest")
+
+    if args.suite == "browser":
+        import browser_eval
+        return browser_eval.main(args)
 
     tasks = load_tasks(args.tasks, args.suite)
     if not tasks:

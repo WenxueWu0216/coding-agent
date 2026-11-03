@@ -245,3 +245,18 @@ def test_sensitive_steps_need_a_supplied_value_and_approval(server, tmp_path):
         assert r["error"] == "denied" and s.page.input_value("#admin-pass") == ""
     with session(server, credential_approver=lambda req: True) as s:
         assert wf.Replayer(s, "fallback", values={1: "Tr0ub4dor-x9"}).run(flow)["ok"]
+
+
+def test_table_search_workflow(server):
+    def script(p):
+        p.click("#q")
+        p.keyboard.type("hopper")
+        p.click("#people tbody tr:nth-child(3) button")
+    flow = record(server, "table", script)
+    assert [(s["action"], s["target"].get("name"), s["value"]) for s in flow["steps"]] == [
+        ("type", "Search people", "hopper"), ("click", "View Grace Hopper", None)]
+    for mode in ("selector", "fallback"):
+        with session(server) as s:
+            assert wf.Replayer(s, mode).run(flow)["ok"]
+            assert s.page.inner_text("#count") == "1 of 12 people"
+            assert s.page.inner_text("#detail h2") == "Grace Hopper"

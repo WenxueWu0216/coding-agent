@@ -20,7 +20,7 @@ from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import TimeoutError as PlaywrightTimeout
 from playwright.sync_api import sync_playwright
 
-from browser_safety import BrowserPolicy, BrowserPolicyError, looks_secret, untrusted
+from browser_safety import BrowserPolicy, BrowserPolicyError, looks_destructive, looks_secret, untrusted
 from tracing import null_trace, scrub
 
 DOM_JS = (Path(__file__).resolve().parent / "browser_dom.js").read_text()
@@ -60,10 +60,21 @@ def deny_credentials(request: dict) -> bool:
     return False
 
 
+def deny_destructive(request: dict) -> bool:
+    """Default gate for destructive clicks requested by the agent: no human present, so no."""
+    return False
+
+
 def ask_credentials(request: dict) -> bool:
     """Interactive credential gate for the CLI."""
     print(f"\n  The agent wants to type into a sensitive field ({request['reason']}): "
           f"{request['field']!r} on {request['url']}")
+    return input("  Allow? [y/N] ").strip().lower() == "y"
+
+
+def ask_destructive(request: dict) -> bool:
+    """Interactive gate for destructive clicks, for the CLI."""
+    print(f"\n  The agent wants to click {request['field']!r} on {request['url']}, which looks destructive.")
     return input("  Allow? [y/N] ").strip().lower() == "y"
 
 
@@ -86,11 +97,12 @@ def describe_target(target: Optional[dict]) -> str:
 
 class BrowserSession:
     def __init__(self, policy: BrowserPolicy, credential_approver: Callable[[dict], bool] = deny_credentials,
-                 trace=null_trace, screenshot_dir: Optional[Path] = None, screenshot_every_step: bool = False,
+                 click_approver: Callable[[dict], bool] = deny_destructive, trace=null_trace, screenshot_dir: Optional[Path] = None, screenshot_every_step: bool = False,
                  headless: bool = True, wait_ms: int = 2000, action_timeout_ms: int = 5000,
                  nav_timeout_ms: int = 15000):
         self.policy = policy
         self.credential_approver = credential_approver
+        self.click_approver = click_approver   # destructive clicks the agent asks for (not recorded replay steps)
         self.trace = trace
         self.parent: Optional[str] = None   # trace parent for the next events (the agent's tool_call)
         self.screenshot_dir = Path(screenshot_dir) if screenshot_dir else None
@@ -205,6 +217,10 @@ class BrowserSession:
                                        nearby=self._nearby(target))
                 info["resolved_by"] = how
                 info["element"] = loc.evaluate(DESCRIBE)
+                if action == "click" and source == "agent":
+                    el = info["element"]
+                    if looks_destructive(f"{el.get('name')} {el.get('text') or ''}"):
+                        self._gate(self.click_approver, "destructive", el, "click", "looks destructive")
                 result = self._act(action, loc, value, info["element"])
             else:
                 raise BrowserError("bad_args", f"unknown browser action {action!r}")
@@ -282,7 +298,8 @@ class BrowserSession:
             raise BrowserError("missing_value", f"{action} needs a value")
         if action == "type":
             if el.get("sensitive") or looks_secret(str(value)):
-                self._credential_gate(el, "sensitive field" if el.get("sensitive") else "value looks like a secret")
+                self._gate(self.credential_approver, "credential", el, "type",
+                           "sensitive field" if el.get("sensitive") else "value looks like a secret")
             loc.fill(str(value), timeout=t)
             return f"Typed {len(str(value))} characters into {label}."
         if action == "select":
@@ -305,17 +322,19 @@ class BrowserSession:
         except PlaywrightError:
             pass
 
-    def _credential_gate(self, el, reason):
+    def _gate(self, approver, gate, el, action, reason):
+        """Human approval for credential entry and destructive clicks. Only an exact True passes."""
         request = {"url": self.page.url, "field": el.get("name") or el.get("label") or el.get("selector"),
-                   "selector": el.get("selector"), "reason": reason}
-        approved = self.credential_approver(request) is True
-        self.trace("approval_decision", parent=self.parent, tool_name="browser_type",
+                   "selector": el.get("selector"), "reason": reason, "gate": gate}
+        approved = approver(request) is True
+        self.trace("approval_decision", parent=self.parent, tool_name=f"browser_{action}",
                    decision="approved" if approved else "denied",
-                   approver=getattr(self.credential_approver, "__name__", "unknown"), gate="credential",
-                   field=request["field"], reason=reason)
+                   approver=getattr(approver, "__name__", "unknown"), gate=gate, field=request["field"], reason=reason)
         if not approved:
-            raise CredentialDenied(f"typing into {request['field']!r} ({reason}) needs human approval, and it "
-                                   f"was not given. Nothing was typed. Do not retry; ask the user.")
+            verb = "typing into" if action == "type" else "clicking"
+            raise CredentialDenied(f"{verb} {request['field']!r} ({reason}) needs human approval, and it was not "
+                                   f"given. Nothing was {'typed' if action == 'type' else 'clicked'}. Do not retry; "
+                                   f"ask the user.")
 
     # ---------- element resolution ----------
     def _locator(self, strategy, target):

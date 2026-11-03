@@ -177,7 +177,8 @@ class Agent:
         if self.browser:   # limited by the URL allowlist; credential entry has its own human gate
             from browser_tools import TOOL_NAMES as BROWSER_TOOLS
             session = self.browser.session
-            session.trace, session.parent = self._trace, self._tool_event
+            if self._trace is not null_trace:   # browser steps join this run's trace
+                session.trace, session.parent = self._trace, self._tool_event
 
             def browser_tool(tool_name):
                 return lambda **a: self.browser.call_for_agent(tool_name, a)

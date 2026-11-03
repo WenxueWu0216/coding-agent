@@ -20,6 +20,7 @@ human approval; see BrowserSession.type in browser.py.
 """
 import ipaddress
 import json
+import re
 import socket
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -134,6 +135,16 @@ class BrowserPolicy:
             return True
         except BrowserPolicyError:
             return False
+
+
+# Elements whose name suggests an irreversible or costly action. The agent needs a human's approval
+# to click one, and a workflow repair may not substitute one for a harmless recorded element.
+DESTRUCTIVE = re.compile(r"\b(delete|remove|erase|wipe|destroy|deactivate|close account|unsubscribe|pay|purchase|"
+                         r"buy|order now|transfer|withdraw|send money|confirm payment|reset)\b", re.I)
+
+
+def looks_destructive(text: str) -> bool:
+    return bool(DESTRUCTIVE.search(text or ""))
 
 
 def looks_secret(value: str) -> bool:

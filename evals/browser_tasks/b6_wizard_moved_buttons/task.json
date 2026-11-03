@@ -1,0 +1,50 @@
+{
+  "id": "b6_wizard_moved_buttons",
+  "app": "wizard",
+  "category": "changed",
+  "description": "Sign-up wizard; before replay the Back/Next buttons move above the fields, in a <nav>, in swapped order.",
+  "user_steps": [
+    [
+      "fill",
+      "#username",
+      "katherine"
+    ],
+    [
+      "select",
+      "#plan",
+      "Team"
+    ],
+    [
+      "click",
+      "#step1 .next"
+    ],
+    [
+      "fill",
+      "#city",
+      "Hampton"
+    ],
+    [
+      "select",
+      "#country",
+      "USA"
+    ],
+    [
+      "click",
+      "#step2 .next"
+    ],
+    [
+      "click",
+      "#step3 .finish"
+    ]
+  ],
+  "change": {
+    "variant": "moved",
+    "what": "Back/Next/Finish moved from a <div> below the fields to a <nav> under the heading; Next/Finish now come before Back"
+  },
+  "expect": [
+    {
+      "selector": "#summary",
+      "equals": "Account created: katherine, Team plan, Hampton, USA"
+    }
+  ]
+}

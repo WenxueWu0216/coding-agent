@@ -17,7 +17,6 @@ Replay modes (how a step's element is found):
               approve it, otherwise replay stops with stop="needs_approval".
 """
 import json
-import re
 import time
 import uuid
 from datetime import datetime, timezone
@@ -25,7 +24,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from browser import DESCRIBE, DOM_JS, BrowserError, BrowserSession, describe_target
-from browser_safety import BrowserPolicyError
+from browser_safety import DESTRUCTIVE, BrowserPolicyError
 from pricing import cost_usd
 from tracing import scrub
 
@@ -69,8 +68,6 @@ document.addEventListener('keydown', e => {
 
 # A repair that swaps the recorded element for one with a destructive name always needs a human,
 # whatever confidence the model reports: a page could talk the model into it.
-DESTRUCTIVE = re.compile(r"\b(delete|remove|erase|wipe|destroy|deactivate|close account|unsubscribe|pay|purchase|"
-                         r"buy|order now|transfer|withdraw|send money|confirm payment|reset)\b", re.I)
 TARGET_FIELDS = ("selector", "role", "name", "label", "text", "placeholder", "tag", "type")
 
 
