@@ -1,0 +1,39 @@
+{
+  "id": "b1_form_contact",
+  "app": "form",
+  "category": "unchanged",
+  "description": "Fill in and submit the contact form.",
+  "user_steps": [
+    [
+      "fill",
+      "#name",
+      "Grace Hopper"
+    ],
+    [
+      "fill",
+      "#email",
+      "grace@example.com"
+    ],
+    [
+      "select",
+      "#topic",
+      "Billing"
+    ],
+    [
+      "fill",
+      "#message",
+      "Invoice question"
+    ],
+    [
+      "click",
+      "#submit-btn"
+    ]
+  ],
+  "change": null,
+  "expect": [
+    {
+      "selector": "#result",
+      "equals": "Thanks, Grace Hopper! We will reply to grace@example.com about Billing: \"Invoice question\"."
+    }
+  ]
+}

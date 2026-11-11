@@ -140,6 +140,10 @@ def main():
                     help="keep truncated tool args/outputs in the trace (default: hashes and sizes only)")
     ap.add_argument("--no-memory", action="store_true", help="don't remember anything across sessions")
     ap.add_argument("--memory-db", type=Path, default=MEMORY_DB)
+    ap.add_argument("--browser", action="store_true",
+                    help="give the agent browser tools (hosts limited by --browser-allowlist)")
+    ap.add_argument("--browser-allowlist", type=Path, help="default: config/browser_allowlist.json")
+    ap.add_argument("--headed", action="store_true", help="show the browser window")
     defaults = MemoryConfig()
     ap.add_argument("--memory-keep-turns", type=int, default=defaults.keep_turns,
                     help="user turns kept verbatim before older ones are summarized (N)")
@@ -170,6 +174,17 @@ def main():
         forgotten = agent.memory.start_session()
         if forgotten:
             print(f"note: forgot {forgotten} expired or unused low-importance memories")
+    if args.browser:   # imported here so the CLI works without Playwright installed
+        from browser import BrowserSession, ask_credentials, ask_destructive
+        from browser_safety import DEFAULT_CONFIG, BrowserPolicy
+        from browser_tools import BrowserToolbox
+        policy = BrowserPolicy.load(args.browser_allowlist or DEFAULT_CONFIG)
+        if not policy.allow:
+            print("note: the browser allowlist is empty, so every URL will be blocked; edit "
+                  f"{args.browser_allowlist or DEFAULT_CONFIG}")
+        agent.browser = BrowserToolbox(BrowserSession(policy, credential_approver=ask_credentials,
+                                                      click_approver=ask_destructive, headless=not args.headed,
+                                                      screenshot_dir=TRACE_DIR / "screenshots"))
     session = Session(agent, checkpoints, tracer=tracer)
     print(f"coding agent · {args.model} · /help for commands")
     while True:
@@ -183,6 +198,8 @@ def main():
             continue
         session.turn(line)
     session.close()
+    if agent.browser:
+        agent.browser.session.close()
 
 
 if __name__ == "__main__":

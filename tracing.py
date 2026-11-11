@@ -15,7 +15,8 @@ from pricing import cost_usd as price
 # Event types written by the tracer. task_start/task_end/api_error are the names used
 # before the analytics schema; report.py and loader.py still read them in old traces.
 EVENT_TYPES = {"run_start", "model_call", "tool_call", "tool_result", "approval_decision",
-               "verify", "rollback", "run_end", "api_error", "memory_retrieval", "memory_summary", "memory_save"}
+               "verify", "rollback", "run_end", "api_error", "memory_retrieval", "memory_summary", "memory_save",
+               "browser_step", "browser_repair"}
 LEGACY_TYPES = {"task_start": "run_start", "task_end": "run_end"}
 
 # Fields every event carries, with the value used when an event has nothing to say.
@@ -27,7 +28,7 @@ ENVELOPE: dict[str, Any] = {
 
 # Fields that may hold file contents, prompts or model text. In the default (redacted)
 # mode they are replaced by <field>_hash and <field>_size_bytes.
-CONTENT_FIELDS = ("args", "output", "text", "prompt", "message", "files")
+CONTENT_FIELDS = ("args", "output", "text", "prompt", "message", "files", "value")
 
 SECRET_PATTERNS = [
     re.compile(r"sk-ant-[A-Za-z0-9_\-]{8,}"),
@@ -173,6 +174,16 @@ def failure_root_cause(events: list[dict], passed: bool, stop: str, loop_n: int 
     if any(r.get("error") in CONTEXT_ERRORS for r in results.values()):
         return "bad_file_context"
     return "other"
+
+
+def browser_root_cause(events: list[dict], passed: bool) -> str:
+    """Root cause of a failed browser replay: the error kind of the step that stopped it
+    (selector_not_found, needs_approval, denied, policy_block, timeout, ...), or wrong_result when
+    every step ran but the page did not end up in the expected state."""
+    if passed:
+        return "none"
+    failed = [e for e in events if e["type"] == "browser_step" and e.get("status") == "error"]
+    return (failed[-1].get("error") or "other") if failed else "wrong_result"
 
 
 def git_info(repo_dir):

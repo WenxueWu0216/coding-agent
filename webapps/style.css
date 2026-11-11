@@ -1,0 +1,9 @@
+body { font: 15px/1.4 system-ui, sans-serif; max-width: 640px; margin: 2rem auto; padding: 0 1rem; }
+label { display: block; margin-top: .6rem; }
+input, select, textarea { font: inherit; padding: .3rem; min-width: 16rem; }
+button { font: inherit; margin-top: .8rem; padding: .3rem .9rem; }
+.actions { display: flex; gap: .5rem; }
+[hidden] { display: none !important; }
+table { border-collapse: collapse; width: 100%; margin-top: 1rem; }
+td, th { border-bottom: 1px solid #ddd; padding: .3rem; text-align: left; }
+.notice { background: #fff6d6; padding: .6rem; border: 1px solid #e0c200; }

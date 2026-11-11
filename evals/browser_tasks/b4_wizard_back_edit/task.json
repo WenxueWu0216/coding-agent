@@ -1,0 +1,50 @@
+{
+  "id": "b4_wizard_back_edit",
+  "app": "wizard",
+  "category": "unchanged",
+  "description": "Go forward, come back to change the plan, then finish.",
+  "user_steps": [
+    [
+      "fill",
+      "#username",
+      "alan"
+    ],
+    [
+      "click",
+      "#step1 .next"
+    ],
+    [
+      "fill",
+      "#city",
+      "Manchester"
+    ],
+    [
+      "click",
+      "#step2 .back"
+    ],
+    [
+      "select",
+      "#plan",
+      "Team"
+    ],
+    [
+      "click",
+      "#step1 .next"
+    ],
+    [
+      "click",
+      "#step2 .next"
+    ],
+    [
+      "click",
+      "#step3 .finish"
+    ]
+  ],
+  "change": null,
+  "expect": [
+    {
+      "selector": "#summary",
+      "equals": "Account created: alan, Team plan, Manchester, UK"
+    }
+  ]
+}
