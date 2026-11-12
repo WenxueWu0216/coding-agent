@@ -1,6 +1,5 @@
 import argparse
 import json
-import os
 import shutil
 import subprocess
 import sys
@@ -11,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 from pricing import cost_usd
+from sandbox import DEFAULT_IMAGE, LocalRunner, SandboxUnavailable, make_runner
 
 TASKS_DIR = Path(__file__).resolve().parent / "evals" / "tasks"
 PROJECT_DIR = Path(__file__).resolve().parent
@@ -41,31 +41,30 @@ def tampered_files(task, workspace):
     return bad
 
 
-def run_hidden_test(task_dir, workspace):
+def run_hidden_test(task_dir, workspace, runner=None):
+    """Runs in the same sandbox as the agent: the test imports code the agent wrote."""
+    runner = runner or LocalRunner()
     shutil.copy(task_dir / "hidden_test.py", workspace / "test_hidden.py")
     for cache in workspace.rglob("__pycache__"):
         shutil.rmtree(cache, ignore_errors=True)
     try:
-        r = subprocess.run(
-            [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "test_hidden.py"],
-            cwd=workspace, capture_output=True, text=True, timeout=60,
-            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
-        )
-        return r.returncode == 0, (r.stdout + r.stderr)[-1500:]
+        code, out = runner.run(runner.python() + ["-m", "pytest", "-q", "-p", "no:cacheprovider", "test_hidden.py"],
+                               cwd=workspace, timeout=60)
+        return code == 0, out[-1500:]
     except subprocess.TimeoutExpired:
         return False, "hidden test timed out"
 
 
-def validate(tasks):
+def validate(tasks, runner=None):
     """Every task must fail before the fix and pass with the reference fix."""
     ok = True
     for t in tasks:
         with tempfile.TemporaryDirectory() as tmp:
             ws = Path(tmp)
             shutil.copytree(t["dir"] / "repo", ws, dirs_exist_ok=True)
-            before, _ = run_hidden_test(t["dir"], ws)
+            before, _ = run_hidden_test(t["dir"], ws, runner)
             shutil.copytree(t["dir"] / "solution", ws, dirs_exist_ok=True)
-            after, log = run_hidden_test(t["dir"], ws)
+            after, log = run_hidden_test(t["dir"], ws, runner)
             touches_protected = bool(tampered_files(t, ws))
         good = (not before) and after and not touches_protected
         ok &= good
@@ -111,7 +110,7 @@ def merge_stats(total, stats):
 
 
 def run_task(task, model, max_steps, client=None, trace_path=None, verify=True, run_id="", trace_content=False,
-             memory=False, memory_config=None):
+             memory=False, memory_config=None, sandbox=None):
     """Run one task. A task with "sessions" runs each prompt as a fresh conversation in the same workspace;
     with memory=True the sessions share a memory store, so later sessions can use what earlier ones learned."""
     import anthropic
@@ -133,13 +132,14 @@ def run_task(task, model, max_steps, client=None, trace_path=None, verify=True, 
         if tracer:
             tracer.event("run_start", task=task["id"], task_id=task["id"], suite=task["suite"],
                          category=task["category"], prompt="\n---\n".join(prompts), max_steps=max_steps,
-                         verify=verify, memory=memory, sessions=len(prompts))
+                         verify=verify, memory=memory, sessions=len(prompts),
+                         sandbox=(sandbox or LocalRunner()).name)
         t0 = time.time()
         stats = None
         try:
             for i, prompt in enumerate(prompts):
                 agent = Agent(workspace=ws, model=model, approver=auto_approve, max_steps=max_steps,
-                              client=client, verbose=False, verify=verify)
+                              client=client, verbose=False, verify=verify, sandbox=sandbox)
                 if store:
                     agent.memory = MemoryManager(store, project=task["id"], session_id=f"{task['id']}-s{i}",
                                                  client=agent.client, model=model,
@@ -154,7 +154,7 @@ def run_task(task, model, max_steps, client=None, trace_path=None, verify=True, 
             store.close()
         stats["wall_ms"] = round((time.time() - t0) * 1000)
         tampered = tampered_files(task, ws)
-        passed, log = run_hidden_test(task["dir"], ws)
+        passed, log = run_hidden_test(task["dir"], ws, sandbox)
         if tampered:
             passed, log = False, f"agent modified protected files: {tampered}"
 
@@ -225,6 +225,10 @@ def main():
     ap.add_argument("--memory", action="store_true", help="give the agent long-term memory (see memory_policy.py)")
     ap.add_argument("--trace-content", action="store_true",
                     help="keep truncated tool args/outputs and model text in traces (default: hashes and sizes only)")
+    ap.add_argument("--sandbox", choices=["docker", "none"], default="docker",
+                    help="where agent commands, the completion gate and hidden tests run (default: docker; "
+                         "none = directly on this machine, where python/pytest can run arbitrary code)")
+    ap.add_argument("--sandbox-image", default=DEFAULT_IMAGE, help="image for --sandbox docker (sandbox/Dockerfile)")
     args = ap.parse_args()
 
     try:
@@ -239,8 +243,12 @@ def main():
     tasks = load_tasks(args.tasks, args.suite)
     if not tasks:
         sys.exit("no tasks matched")
+    try:
+        runner = make_runner(args.sandbox, args.sandbox_image)
+    except SandboxUnavailable as e:
+        sys.exit(f"sandbox unavailable: {e}")
     if args.validate:
-        sys.exit(0 if validate(tasks) else 1)
+        sys.exit(0 if validate(tasks, runner) else 1)
 
     from tracing import build_manifest
 
@@ -252,6 +260,7 @@ def main():
     manifest["config"]["suite"] = args.suite
     manifest["config"]["verify"] = not args.no_verify
     manifest["config"]["memory"] = args.memory
+    manifest["config"]["sandbox"] = runner.describe()
     (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     if manifest["git"]["dirty"]:
         print("warning: uncommitted changes; this run is not reproducible from a commit")
@@ -262,7 +271,8 @@ def main():
             for t in tasks:
                 trace_path = run_dir / "traces" / f"{t['id']}__r{i}.jsonl"
                 r = run_task(t, args.model, args.max_steps, trace_path=trace_path, verify=not args.no_verify,
-                             run_id=run_id, trace_content=args.trace_content, memory=args.memory)
+                             run_id=run_id, trace_content=args.trace_content, memory=args.memory,
+                             sandbox=runner)
                 r["run_id"], r["repeat"] = run_id, i
                 rows.append(r)
                 f.write(json.dumps(r) + "\n")

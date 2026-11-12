@@ -1,12 +1,11 @@
-import os
 import shlex
 import subprocess
-import sys
 import time
 from pathlib import Path
 
 import anthropic
 from safety import PolicyError, check_command, safe_path
+from sandbox import LocalRunner
 from memory import MemoryInputError
 from memory_policy import text_of
 from memory_tools import AGENT_TOOL_NAMES, anthropic_tools
@@ -96,14 +95,16 @@ def auto_approve(name, args):
 
 class Agent:
     def __init__(self, workspace=".", model=MODEL, approver=ask_user, max_steps=20, client=None, verbose=True,
-                 verify=True, max_verify_attempts=3, reviewer=None, memory=None, browser=None):
+                 verify=True, max_verify_attempts=3, reviewer=None, memory=None, browser=None, sandbox=None):
         self.root = Path(workspace).resolve()
+        # Where run_bash and the completion gate run code: LocalRunner (this machine) or DockerSandbox
+        self.runner = sandbox or LocalRunner()
         self.model = model
         self.approver = approver
         self.max_steps = max_steps
         self.client = client or anthropic.Anthropic()
         self.verbose = verbose
-        self.verifier = Verifier(self.root, max_verify_attempts, log=self.log) if verify else None
+        self.verifier = Verifier(self.root, max_verify_attempts, log=self.log, runner=self.runner) if verify else None
         self.reviewer = reviewer   # (path, old_text, new_text) -> ReviewResult; None = apply without review
         self.memory = memory       # MemoryManager, or None for no memory
         self.browser = browser     # BrowserToolbox (browser_tools.py), or None for no browser
@@ -155,15 +156,13 @@ class Agent:
             self.verifier.before_write(path)
 
     def run_bash(self, command):
-        args = check_command(command)
+        args = check_command(command)   # the allowlist still applies inside the sandbox
         if args[0] in ("python", "python3"):
-            args[0] = sys.executable
+            args = self.runner.python() + args[1:]
         elif args[0] == "pytest":
-            args = [sys.executable, "-m", "pytest"] + args[1:]
-        r = subprocess.run(args, capture_output=True, text=True, timeout=COMMAND_TIMEOUT, cwd=self.root,
-                           env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
-        out = (r.stdout + r.stderr)[-4000:]
-        return f"exit code {r.returncode}\n{out}"
+            args = self.runner.python() + ["-m", "pytest"] + args[1:]
+        code, out = self.runner.run(args, cwd=self.root, timeout=COMMAND_TIMEOUT)
+        return f"exit code {code}\n{out[-4000:]}"
 
     def run_tool(self, name, args):
         """Returns (output_text, error_kind). error_kind is None on success."""

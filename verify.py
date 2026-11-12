@@ -4,12 +4,11 @@ New failures are fed back to the model. After too many failed attempts in a row,
 every edit from the current turn is rolled back so the repo is never left worse
 than the agent found it.
 """
-import os
 import re
-import shutil
 import subprocess
-import sys
 from pathlib import Path
+
+from sandbox import LocalRunner
 
 # Ruff rules for errors that are almost always real bugs: syntax errors,
 # invalid comparisons, misplaced statements, and undefined names.
@@ -18,45 +17,35 @@ PYTEST_SUMMARY = re.compile(r"^(?:FAILED|ERROR) (\S+)")
 RUFF_ERROR = re.compile(r"^\S+:\d+:\d+: [A-Z]+\d+")
 
 
-def _run(args, root, timeout=60):
+def _run(args, root, runner, timeout=60):
     try:
-        r = subprocess.run(args, cwd=root, capture_output=True, text=True, timeout=timeout,
-                           env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
-        return r.returncode, r.stdout + r.stderr
+        return runner.run(args, cwd=root, timeout=timeout)
     except subprocess.TimeoutExpired:
         return -1, f"timed out after {timeout}s"
 
 
-def _ruff():
-    if shutil.which("ruff"):
-        return ["ruff"]
-    try:
-        import ruff  # noqa: F401
-        return [sys.executable, "-m", "ruff"]
-    except ImportError:
-        return None
-
-
-def lint(root, files):
+def lint(root, files, runner=None):
     """Lint only the files the agent changed. Returns (failure ids, output)."""
+    runner = runner or LocalRunner()
     py = [f for f in files if f.endswith(".py") and (root / f).exists()]
     if not py:
         return set(), ""
-    ruff = _ruff()
+    ruff = runner.ruff()
     if ruff:
         code, out = _run(ruff + ["check", "--select", FATAL_RUFF_RULES, "--output-format", "concise",
-                                 "--no-cache", *py], root)
+                                 "--no-cache", *py], root, runner)
     else:
-        code, out = _run([sys.executable, "-m", "py_compile", *py], root)
+        code, out = _run(runner.python() + ["-m", "py_compile", *py], root, runner)
     if code == 0:
         return set(), out
     errors = {m.group(0) for line in out.splitlines() if (m := RUFF_ERROR.match(line))}
     return (errors or {f"lint failed (exit code {code})"}), out
 
 
-def run_tests(root):
+def run_tests(root, runner=None):
     """Run the project's tests. Returns (ids of failing tests, output)."""
-    code, out = _run([sys.executable, "-m", "pytest", "-q", "-rfE", "-p", "no:cacheprovider"], root)
+    runner = runner or LocalRunner()
+    code, out = _run(runner.python() + ["-m", "pytest", "-q", "-rfE", "-p", "no:cacheprovider"], root, runner)
     if code in (0, 5):  # 5 = no tests collected
         return set(), out
     failing = {m.group(1) for line in out.splitlines() if (m := PYTEST_SUMMARY.match(line))}
@@ -64,8 +53,9 @@ def run_tests(root):
 
 
 class Verifier:
-    def __init__(self, root, max_attempts=3, log=None):
+    def __init__(self, root, max_attempts=3, log=None, runner=None):
         self.root = Path(root).resolve()
+        self.runner = runner or LocalRunner()
         self.max_attempts = max_attempts
         self.log = log or (lambda msg: None)
         self.reset()
@@ -80,7 +70,7 @@ class Verifier:
     def before_write(self, path):
         """Called by edit_file right before it writes. Records state needed for rollback."""
         if self.baseline is None:
-            self.baseline, _ = run_tests(self.root)
+            self.baseline, _ = run_tests(self.root, self.runner)
         if path not in self.originals:
             self.originals[path] = path.read_bytes() if path.exists() else None
         self.dirty = True
@@ -91,8 +81,8 @@ class Verifier:
     def check(self):
         """Returns (new_failures, report). Only failures the agent introduced count."""
         self.dirty = False
-        lint_fails, lint_out = lint(self.root, self.changed_files())
-        test_fails, test_out = run_tests(self.root)
+        lint_fails, lint_out = lint(self.root, self.changed_files(), self.runner)
+        test_fails, test_out = run_tests(self.root, self.runner)
         new_tests = test_fails - (self.baseline or set())
         new = sorted(lint_fails) + sorted(new_tests)
         report = []
