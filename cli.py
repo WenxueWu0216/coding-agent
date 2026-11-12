@@ -1,5 +1,6 @@
 """Interactive CLI: chat with the agent, review its diffs, undo whole turns."""
 import argparse
+import sys
 import time
 import uuid
 from datetime import datetime
@@ -11,6 +12,7 @@ from memory import MemoryStore
 from memory_policy import MemoryConfig, MemoryManager
 from pricing import cost_usd
 from review import interactive_review
+from sandbox import DEFAULT_IMAGE, SandboxUnavailable, make_runner
 from tracing import Tracer, utc_ms
 
 TRACE_DIR = Path(__file__).resolve().parent / "traces" / "cli"
@@ -152,9 +154,17 @@ def main():
                     help="forget low-importance memories unused this many days (X)")
     ap.add_argument("--memory-token-budget", type=int, default=defaults.token_budget,
                     help="max tokens of memory notes in the prompt")
+    ap.add_argument("--sandbox", choices=["docker", "none"], default="docker",
+                    help="where the agent's commands and tests run (default: docker; none = directly on this "
+                         "machine, where python/pytest can run arbitrary code)")
+    ap.add_argument("--sandbox-image", default=DEFAULT_IMAGE, help="image for --sandbox docker (sandbox/Dockerfile)")
     args = ap.parse_args()
 
-    agent = Agent(model=args.model, verify=not args.no_verify, reviewer=interactive_review)
+    try:
+        runner = make_runner(args.sandbox, args.sandbox_image)
+    except SandboxUnavailable as e:
+        sys.exit(f"sandbox unavailable: {e}")
+    agent = Agent(model=args.model, verify=not args.no_verify, reviewer=interactive_review, sandbox=runner)
     try:
         checkpoints = CheckpointStore(agent.root)
     except NotARepo as e:
@@ -186,7 +196,7 @@ def main():
                                                       click_approver=ask_destructive, headless=not args.headed,
                                                       screenshot_dir=TRACE_DIR / "screenshots"))
     session = Session(agent, checkpoints, tracer=tracer)
-    print(f"coding agent · {args.model} · /help for commands")
+    print(f"coding agent · {args.model} · sandbox: {runner.name} · /help for commands")
     while True:
         try:
             line = input("\nYou: ")

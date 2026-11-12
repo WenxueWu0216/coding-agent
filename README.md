@@ -37,6 +37,7 @@ flowchart LR
     L --> G{Approval gate}
     G --> T[Tools<br/>read_file / edit_file / run_bash]
     T --> S[Safety layer<br/>path sandbox + command allowlist]
+    S --> D[Docker sandbox<br/>no network, read-only, no host env]
     T -- tool_result --> L
     L -. every step .-> TR[(JSONL trace)]
 ```
@@ -52,7 +53,7 @@ flowchart LR
 |---|---|
 | `read_file` | Reads a file inside the project. |
 | `edit_file` | Exact string replacement. `old_str` must match **exactly once**, so an ambiguous edit fails loudly instead of changing the wrong spot. Empty `old_str` creates a new file but never overwrites one. |
-| `run_bash` | Runs an allowlisted command (`ls`, `cat`, `grep`, `pytest`, `python`, …) as an argument list with no shell, a 30s timeout, and output truncated to the last 4,000 characters. |
+| `run_bash` | Runs an allowlisted command (`ls`, `cat`, `grep`, `pytest`, `python`, …) as an argument list with no shell, inside a throwaway Docker container (see [Security model](#security-model)), with a 120s timeout and output truncated to the last 4,000 characters. |
 
 ### Hunk-level diff review
 In interactive mode, an edit is a proposal, not a write. The agent computes the new file, the CLI shows a colored unified diff split into hunks, and for each hunk you choose:
@@ -92,16 +93,30 @@ The threat model assumes the model can be manipulated by prompt injection inside
 
 - **Path sandbox:** every path is resolved (including symlinks) and must stay inside the workspace. This blocks `../` traversal, absolute paths, and symlink escapes.
 - **Command allowlist:** commands are parsed with `shlex` and executed without a shell, so `;`, `&&`, and `|` cannot chain extra commands.
+- **Docker sandbox:** every command, the completion gate's lint and test runs, and the eval's hidden tests run in a fresh container (`sandbox.py`). This matters because `python` and `pytest` are on the allowlist and can run arbitrary code, which the allowlist cannot inspect. The kernel enforces the container's limits whatever that code does:
+
+  | Flag | Effect |
+  |---|---|
+  | `--mount` of the workspace only, at `/work` | The rest of your disk (home folder, `~/.ssh`, other projects) doesn't exist inside |
+  | `--network none` | No network and no DNS, so nothing can be sent out |
+  | no `--env` from the host | API keys and other environment variables aren't visible; only `PYTHONDONTWRITEBYTECODE`, `HOME=/tmp` and `PYTHONUNBUFFERED` are set |
+  | `--read-only` + `--tmpfs /tmp` | Nothing outside the workspace can be written, except a 64 MB scratch `/tmp` |
+  | `--cap-drop ALL`, `no-new-privileges` | No Linux capabilities, and setuid binaries can't raise privileges |
+  | `--user <your uid>:<your gid>` | Files the agent creates belong to you |
+  | `--memory 512m`, `--cpus 1`, `--pids-limit 128` | Runaway memory, CPU and fork bombs are capped |
+  | `--rm`, killed on timeout | Each command gets a clean container; a timed-out command's container is removed, not left running |
+
+  Build the image once with `docker build -t coding-agent-sandbox sandbox/`. `--sandbox docker` is the default for `cli.py` and `eval.py`. If Docker or the image is missing they stop and say how to fix it, rather than silently running unsandboxed. `--sandbox none` runs commands directly on the machine, as before. The eval records the sandbox in the run manifest and on `run_start`.
 - **Human approval:** every write and command needs confirmation, defaulting to deny.
 - **Limits:** step cap and command timeouts prevent runaway loops.
-- **Tests:** 19 attack-case tests cover traversal, symlink escape, destructive commands, network access, and privilege escalation.
+- **Tests:** 19 attack-case tests in `test_safety.py` cover traversal, symlink escape, destructive commands, network access, and privilege escalation. `test_sandbox.py` runs the attacks that get past the allowlist (all through `python -c`) in a real container: reading `ANTHROPIC_API_KEY`, reading a file next to the workspace, listing the home folder, opening a socket, resolving DNS, writing to `/usr`, holding capabilities, and a project test and a hidden test that can only see the key outside the sandbox. Each of these 9 was checked to succeed when run with `--sandbox none` and is stopped by the container. Two more check a fork bomb (capped by `--pids-limit`) and that a timed-out command leaves no container running. The Docker tests are skipped if Docker or the image isn't available.
 
-**Known limitation:** `python` and `pytest` are on the allowlist and can execute arbitrary code, so the allowlist stops accidental damage but is not a hard boundary. The planned fix is to run tools inside a Docker container with no network access.
+**What the sandbox does not cover.** The workspace itself is mounted read-write, because the agent has to edit it. Code in the container can change or delete any file in the project; `/undo` checkpoints, the completion gate's rollback and the approval prompt are the protection there. Containers share the host kernel, so a kernel exploit could escape one; gVisor or a microVM (Firecracker) would be the next step. The image only has Python, pytest and Ruff: a project with its own dependencies needs a derived image (`--sandbox-image`). Each command starts a new container, which costs about 0.2 s (median 214 ms vs 19 ms for `python -c pass` run directly, measured here). Validating all 37 eval tasks took 38 s in the sandbox vs 22 s without.
 
 ### Evaluation harness
 - **32 tasks in two suites.** *Core* (20): bug fixes, features, multi-file changes. *Hard* (12): cross-module renames (including aliased imports), specs that must be inferred from existing tests, bug reports that point at the wrong file, unstated edge cases (atomicity, input mutation, empty input), constraint following ("don't use the csv module", "don't edit the tests"), and a feature spanning model, store, and view layers.
 - Each task has starting code, a natural-language prompt, **hidden unit tests**, and a reference solution.
-- Each run copies the task into a temp directory, runs the agent with auto-approval, then runs the hidden tests. The tests live **outside the agent's sandbox**, so it cannot read or overfit to them.
+- Each run copies the task into a temp directory, runs the agent with auto-approval, then runs the hidden tests. The tests live **outside the agent's workspace**, so it cannot read or overfit to them. They are copied in only after the agent finishes, and run in the same Docker sandbox as the agent, because they import code the agent wrote.
 - **Task validation:** `--validate` checks that every hidden test fails on the original code and passes with the reference fix. This caught a stale-bytecode bug (same-size edits within the same second reused cached `.pyc` files) that would have scored correct fixes as failures.
 - **Tamper detection:** tasks can mark files as protected, such as visible tests the agent is told not to edit. If the agent changes them, the run is scored `tampered` instead of passing, so it can't succeed by weakening the tests.
 - **Repeats** (`--repeat N`) measure variance, since model outputs are non-deterministic.
@@ -579,12 +594,14 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 export ANTHROPIC_API_KEY="sk-ant-..."
+docker build -t coding-agent-sandbox sandbox/   # once: the image commands run in
 ```
 
 Interactive agent:
 ```bash
-python cli.py                # diff review, /undo, lint/test gate
+python cli.py                # diff review, /undo, lint/test gate, Docker sandbox
 python cli.py --no-verify    # skip the lint/test gate
+python cli.py --sandbox none # run commands directly on this machine (no Docker)
 ```
 
 Evaluation:
@@ -649,6 +666,7 @@ evals/browser_tasks/  6 browser tasks
 evals/tasks/      37 tasks (core + hard + memory): task.json, repo/, hidden_test.py, solution/
 evals/runs/       Run outputs (git-ignored): manifest.json, results.jsonl, traces/
 test_safety.py    19 security tests
+test_sandbox.py   Docker sandbox: flags, and attacks that get past the allowlist (skipped without Docker)
 test_eval.py      Harness, tracing, taxonomy, and regression tests
 test_verify.py    Completion gate: feedback, rollback, baseline handling
 test_review.py    Hunk splitting, partial apply, user edits, agent integration
@@ -684,7 +702,7 @@ test_browser_injection.py  Injected page instructions vs gates (scripted; real m
 - [ ] pipx packaging, CI, demo GIF
 - [ ] Reliability: retries with exponential backoff, circuit breaker, record/replay of model calls
 - [ ] CI regression gate in GitHub Actions
-- [ ] Docker sandbox for tool execution
+- [x] Docker sandbox for tool execution
 - [x] Agent memory: SQLite store, summaries of old turns, retrieval, forgetting, MCP server
 - [ ] Real memory-on vs memory-off eval numbers (needs a run with an API key)
 - [ ] MCP client support
